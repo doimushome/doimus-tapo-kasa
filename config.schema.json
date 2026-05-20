@@ -1,0 +1,138 @@
+{
+  "pluginAlias": "TapoKasa",
+  "pluginType": "platform",
+  "singular": true,
+  "headerDisplay": "Doimus plugin for TP-Link Tapo/Kasa devices. Supports Kasa/Tapo hubs (KH100/H100) with sensors and Tapo WiFi cameras.",
+  "footerDisplay": "For hub devices: configure your Tapo/Kasa account email, password, and hub IP addresses. For cameras: configure each camera's IP, Tapo credentials, and RTSP stream credentials.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "hubs": {
+        "title": "Kasa/Tapo Hubs",
+        "type": "object",
+        "properties": {
+          "email": {
+            "title": "Tapo/Kasa Account Email",
+            "type": "string",
+            "description": "Your TP-Link Tapo/Kasa account email"
+          },
+          "password": {
+            "title": "Tapo/Kasa Account Password",
+            "type": "string",
+            "format": "password",
+            "description": "Your TP-Link Tapo/Kasa account password"
+          },
+          "devices": {
+            "title": "Hub IP Addresses",
+            "type": "array",
+            "description": "IP addresses of your Kasa/Tapo hubs (KH100/H100)",
+            "items": {
+              "title": "Hub IP",
+              "type": "string",
+              "format": "ipv4"
+            }
+          },
+          "ignoreSensors": {
+            "title": "Ignore Sensors",
+            "type": "boolean",
+            "default": false,
+            "description": "Ignore temperature/humidity sensors"
+          },
+          "pollInterval": {
+            "title": "Polling Interval (seconds)",
+            "type": "integer",
+            "default": 60,
+            "minimum": 5,
+            "maximum": 3600,
+            "description": "How often to poll hub devices for state updates"
+          }
+        }
+      },
+      "cameras": {
+        "title": "Tapo WiFi Cameras",
+        "type": "array",
+        "description": "Configure your Tapo WiFi cameras",
+        "items": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "title": "Camera Name",
+              "type": "string",
+              "required": true,
+              "description": "Display name for the camera"
+            },
+            "ipAddress": {
+              "title": "Camera IP Address",
+              "type": "string",
+              "format": "ipv4",
+              "required": true,
+              "description": "IP address of the Tapo camera"
+            },
+            "username": {
+              "title": "Camera Username",
+              "type": "string",
+              "default": "admin",
+              "description": "Camera username (usually 'admin')"
+            },
+            "password": {
+              "title": "Tapo Account Password",
+              "type": "string",
+              "format": "password",
+              "required": true,
+              "description": "Your Tapo account password (or camera password if different)"
+            },
+            "streamUser": {
+              "title": "RTSP Username",
+              "type": "string",
+              "required": true,
+              "description": "RTSP stream username (from Tapo app > Camera Account)"
+            },
+            "streamPassword": {
+              "title": "RTSP Password",
+              "type": "string",
+              "format": "password",
+              "required": true,
+              "description": "RTSP stream password (from Tapo app > Camera Account)"
+            },
+            "pullInterval": {
+              "title": "Pull Interval (ms)",
+              "type": "integer",
+              "default": 60000,
+              "description": "Polling interval for camera status updates"
+            },
+            "disablePrivacyToggle": {
+              "title": "Disable Privacy Toggle",
+              "type": "boolean",
+              "default": false,
+              "description": "Disable the privacy mode (eyes) toggle"
+            },
+            "disableAlarmToggle": {
+              "title": "Disable Alarm Toggle",
+              "type": "boolean",
+              "default": false,
+              "description": "Disable the alarm sound toggle"
+            },
+            "disableNotificationsToggle": {
+              "title": "Disable Notifications Toggle",
+              "type": "boolean",
+              "default": false,
+              "description": "Disable the notifications toggle"
+            },
+            "disableMotionDetectionToggle": {
+              "title": "Disable Motion Detection Toggle",
+              "type": "boolean",
+              "default": false,
+              "description": "Disable the motion detection toggle"
+            },
+            "disableLEDToggle": {
+              "title": "Disable LED Toggle",
+              "type": "boolean",
+              "default": false,
+              "description": "Disable the LED status toggle"
+            }
+          }
+        }
+      }
+    }
+  }
+}
