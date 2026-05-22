@@ -283,6 +283,14 @@ async function discoverCameras(cfg, api) {
           } catch (e) {
             api.log("debug", `Poll error for camera ${did}: ${e.message}`);
           }
+
+          // MJPEG frame — best-effort snapshot every poll cycle
+          try {
+            const frame = await client.getSnapshot();
+            if (frame) {
+              api.sendMjpegFrame(did, "main", frame.toString("base64"));
+            }
+          } catch (_) { /* snapshot is best-effort */ }
         }, pullInterval);
         if (timer.unref) timer.unref();
         cameraPollTimers.set(did, timer);

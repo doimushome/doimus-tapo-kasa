@@ -512,6 +512,22 @@ class TapoCameraClient {
     return info.result.device_info.basic_info;
   }
 
+  async getSnapshot() {
+    const responseData = await this.apiRequest({
+      method: "multipleRequest",
+      params: {
+        requests: [
+          { method: "getSnapshot", params: { name: ["snapshot"] } },
+        ],
+      },
+    });
+    const op = responseData.result?.responses?.[0];
+    if (op?.result?.snapshot) {
+      return Buffer.from(op.result.snapshot, "base64");
+    }
+    return null;
+  }
+
   async getStatus() {
     const responseData = await this.apiRequest({
       method: "multipleRequest",
