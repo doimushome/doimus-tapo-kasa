@@ -8,7 +8,11 @@ let cameraPollTimers = new Map();
 
 async function discoverHubDevices(cfg, api) {
   const hubsConfig = cfg.hubs;
-  if (!hubsConfig?.email || !hubsConfig?.password || !hubsConfig?.devices?.length) {
+  if (
+    !hubsConfig?.email ||
+    !hubsConfig?.password ||
+    !hubsConfig?.devices?.length
+  ) {
     api.log("debug", "No hub configuration provided, skipping hub discovery");
     return;
   }
@@ -19,7 +23,12 @@ async function discoverHubDevices(cfg, api) {
   for (const hubIp of devices) {
     try {
       api.log("info", `Connecting to hub at ${hubIp}...`);
-      const tapoConnect = new TapoConnect((level, msg) => api.log(level, msg), email, password, hubIp);
+      const tapoConnect = new TapoConnect(
+        (level, msg) => api.log(level, msg),
+        email,
+        password,
+        hubIp,
+      );
       await tapoConnect.login();
 
       let index = 0;
@@ -27,7 +36,11 @@ async function discoverHubDevices(cfg, api) {
 
       do {
         const devicesResponse = await tapoConnect.getChildDeviceList(index);
-        for (const device of TapoConnect.parseDevices(devicesResponse, tapoConnect, (level, msg) => api.log(level, msg))) {
+        for (const device of TapoConnect.parseDevices(
+          devicesResponse,
+          tapoConnect,
+          (level, msg) => api.log(level, msg),
+        )) {
           deviceMap.set(device.uniqueId, device);
         }
 
@@ -66,7 +79,13 @@ async function discoverHubDevices(cfg, api) {
           break;
         case "thermostat":
           type = "thermostat";
-          capabilities = ["temperature", "target_temp", "heating_state", "min_target_temp", "max_target_temp"];
+          capabilities = [
+            "temperature",
+            "target_temp",
+            "heating_state",
+            "min_target_temp",
+            "max_target_temp",
+          ];
           state = {
             temperature: device.currentTemp ?? 0,
             target_temp: device.targetTemp ?? 0,
@@ -110,7 +129,10 @@ async function discoverHubDevices(cfg, api) {
         capabilities,
         state,
       });
-      api.log("info", `Registered hub ${type}: ${device.name} (${device.model})`);
+      api.log(
+        "info",
+        `Registered hub ${type}: ${device.name} (${device.model})`,
+      );
       hubDevices.set(did, { device, tapoConnect: device.tapoConnect });
     } else {
       hubDevices.get(did).device = device;
@@ -127,20 +149,31 @@ async function discoverHubDevices(cfg, api) {
 
 async function pollHubDevices(cfg, api) {
   const hubsConfig = cfg.hubs;
-  if (!hubsConfig?.email || !hubsConfig?.password || !hubsConfig?.devices?.length) {
+  if (
+    !hubsConfig?.email ||
+    !hubsConfig?.password ||
+    !hubsConfig?.devices?.length
+  ) {
     return;
   }
 
   const { ignoreSensors } = hubsConfig;
 
   for (const [did, state] of hubDevices) {
-    if (ignoreSensors && state.device.deviceType === "temperature_humidity_sensor") {
+    if (
+      ignoreSensors &&
+      state.device.deviceType === "temperature_humidity_sensor"
+    ) {
       continue;
     }
 
     try {
       const deviceList = await state.tapoConnect.getChildDeviceList(0);
-      const updated = TapoConnect.parseDevices(deviceList, state.tapoConnect, null).find((d) => d.uniqueId === state.device.uniqueId);
+      const updated = TapoConnect.parseDevices(
+        deviceList,
+        state.tapoConnect,
+        null,
+      ).find((d) => d.uniqueId === state.device.uniqueId);
 
       if (updated) {
         state.device = updated;
@@ -162,11 +195,14 @@ async function pollHubDevices(cfg, api) {
             break;
           case "contact_sensor":
             try {
-              const triggerLogs = await state.tapoConnect.getChildTriggerLogs(state.device.uniqueId);
+              const triggerLogs = await state.tapoConnect.getChildTriggerLogs(
+                state.device.uniqueId,
+              );
               const logs = triggerLogs?.trigger_log ?? [];
               const lastEvent = logs[0];
               if (lastEvent) {
-                const isOpen = lastEvent.event === "open" || lastEvent.event === "1";
+                const isOpen =
+                  lastEvent.event === "open" || lastEvent.event === "1";
                 api.updateDeviceState(did, {
                   contact: isOpen,
                   battery_low: updated.atLowBattery ?? false,
@@ -214,7 +250,10 @@ async function discoverCameras(cfg, api) {
     seen.add(did);
 
     if (!cameraDevices.has(did)) {
-      const client = new TapoCameraClient((level, msg) => api.log(level, msg), camConfig);
+      const client = new TapoCameraClient(
+        (level, msg) => api.log(level, msg),
+        camConfig,
+      );
 
       try {
         await client.getStok();
@@ -254,7 +293,10 @@ async function discoverCameras(cfg, api) {
           capabilities,
           state,
         });
-        api.log("info", `Registered camera: ${camConfig.name} (${camConfig.ipAddress})`);
+        api.log(
+          "info",
+          `Registered camera: ${camConfig.name} (${camConfig.ipAddress})`,
+        );
         cameraDevices.set(did, { config: camConfig, client, status });
 
         try {
@@ -263,7 +305,10 @@ async function discoverCameras(cfg, api) {
             api.updateDeviceState(did, { motion: motionDetected });
           });
         } catch (e) {
-          api.log("debug", `ONVIF motion detection unavailable for ${camConfig.name}: ${e.message}`);
+          api.log(
+            "debug",
+            `ONVIF motion detection unavailable for ${camConfig.name}: ${e.message}`,
+          );
         }
 
         const pullInterval = camConfig.pullInterval || 60000;
@@ -273,11 +318,16 @@ async function discoverCameras(cfg, api) {
             cameraDevices.get(did).status = newStatus;
 
             const updates = {};
-            if (!camConfig.disablePrivacyToggle) updates.privacy_mode = !newStatus.eyes;
-            if (!camConfig.disableAlarmToggle) updates.alarm = newStatus.alarm ?? false;
-            if (!camConfig.disableNotificationsToggle) updates.notifications = newStatus.notifications ?? false;
-            if (!camConfig.disableMotionDetectionToggle) updates.motion_detection = newStatus.motionDetection ?? false;
-            if (!camConfig.disableLEDToggle) updates.led = newStatus.led ?? false;
+            if (!camConfig.disablePrivacyToggle)
+              updates.privacy_mode = !newStatus.eyes;
+            if (!camConfig.disableAlarmToggle)
+              updates.alarm = newStatus.alarm ?? false;
+            if (!camConfig.disableNotificationsToggle)
+              updates.notifications = newStatus.notifications ?? false;
+            if (!camConfig.disableMotionDetectionToggle)
+              updates.motion_detection = newStatus.motionDetection ?? false;
+            if (!camConfig.disableLEDToggle)
+              updates.led = newStatus.led ?? false;
 
             api.updateDeviceState(did, updates);
           } catch (e) {
@@ -288,14 +338,19 @@ async function discoverCameras(cfg, api) {
           try {
             const frame = await client.getSnapshot();
             if (frame) {
-              api.sendMjpegFrame(did, "main", frame.toString("base64"));
+              api.sendMjpegFrame(did, "main", frame);
             }
-          } catch (_) { /* snapshot is best-effort */ }
+          } catch (_) {
+            /* snapshot is best-effort */
+          }
         }, pullInterval);
         if (timer.unref) timer.unref();
         cameraPollTimers.set(did, timer);
       } catch (e) {
-        api.log("error", `Failed to register camera ${camConfig.name}: ${e.message}`);
+        api.log(
+          "error",
+          `Failed to register camera ${camConfig.name}: ${e.message}`,
+        );
       }
     } else {
       cameraDevices.get(did).config = camConfig;
@@ -325,14 +380,28 @@ module.exports = {
 
         try {
           if (device.deviceType === "thermostat" && key === "target_temp") {
-            await state.tapoConnect.setTempOn(value, state.device.heating_state, device.uniqueId);
+            await state.tapoConnect.setTempOn(
+              value,
+              state.device.heating_state,
+              device.uniqueId,
+            );
             api.updateDeviceState(deviceId, { target_temp: value });
-          } else if (device.deviceType === "thermostat" && key === "heating_state") {
-            await state.tapoConnect.setTempOn(state.device.targetTemp, value, device.uniqueId);
+          } else if (
+            device.deviceType === "thermostat" &&
+            key === "heating_state"
+          ) {
+            await state.tapoConnect.setTempOn(
+              state.device.targetTemp,
+              value,
+              device.uniqueId,
+            );
             api.updateDeviceState(deviceId, { heating_state: value });
           }
         } catch (e) {
-          api.log("error", `Failed to send command to hub device ${deviceId}: ${e.message}`);
+          api.log(
+            "error",
+            `Failed to send command to hub device ${deviceId}: ${e.message}`,
+          );
         }
       } else if (cameraDevices.has(deviceId)) {
         const state = cameraDevices.get(deviceId);
@@ -355,16 +424,29 @@ module.exports = {
             api.updateDeviceState(deviceId, { led: value });
           }
         } catch (e) {
-          api.log("error", `Failed to send command to camera ${deviceId}: ${e.message}`);
+          api.log(
+            "error",
+            `Failed to send command to camera ${deviceId}: ${e.message}`,
+          );
         }
       }
     });
 
-    discoverHubDevices(cfg, api).catch((e) => api.log("error", `Hub discovery error: ${e.message}`));
-    discoverCameras(cfg, api).catch((e) => api.log("error", `Camera discovery error: ${e.message}`));
+    discoverHubDevices(cfg, api).catch((e) =>
+      api.log("error", `Hub discovery error: ${e.message}`),
+    );
+    discoverCameras(cfg, api).catch((e) =>
+      api.log("error", `Camera discovery error: ${e.message}`),
+    );
 
     const pollInterval = (cfg.hubs?.pollInterval || 60) * 1000;
-    hubPollTimer = setInterval(() => pollHubDevices(cfg, api).catch((e) => api.log("error", `Hub poll error: ${e.message}`)), pollInterval);
+    hubPollTimer = setInterval(
+      () =>
+        pollHubDevices(cfg, api).catch((e) =>
+          api.log("error", `Hub poll error: ${e.message}`),
+        ),
+      pollInterval,
+    );
     if (hubPollTimer.unref) hubPollTimer.unref();
   },
 
