@@ -5,6 +5,7 @@ let hubDevices = new Map();
 let cameraDevices = new Map();
 let hubPollTimer = null;
 let cameraPollTimers = new Map();
+let savedApi = null;
 
 async function discoverHubDevices(cfg, api) {
   const hubsConfig = cfg.hubs;
@@ -371,6 +372,7 @@ async function discoverCameras(cfg, api) {
 
 module.exports = {
   start(cfg, api) {
+    savedApi = api;
     api.log("info", "Initializing Tapo/Kasa plugin...");
 
     api.onCommand(async (deviceId, key, value) => {
@@ -461,5 +463,9 @@ module.exports = {
 
     hubDevices.clear();
     cameraDevices.clear();
+  },
+  setConfig(cfg) {
+    this.stop();
+    this.start(cfg, savedApi);
   },
 };

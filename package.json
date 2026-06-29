@@ -1,6 +1,6 @@
 {
   "name": "doimus-tapo-kasa",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Doimus plugin for TP-Link Tapo/Kasa hubs (KH100/H100) with sensors and Tapo WiFi cameras",
   "license": "MIT",
   "author": "Matteo Crippa",
