@@ -21,8 +21,16 @@ class TapoCameraClient {
     this.log = log;
     this.config = config;
     this.cnonce = crypto.randomBytes(8).toString("hex").toUpperCase();
-    this.hashedPassword = crypto.createHash("md5").update(config.password).digest("hex").toUpperCase();
-    this.hashedSha256Password = crypto.createHash("sha256").update(config.password).digest("hex").toUpperCase();
+    this.hashedPassword = crypto
+      .createHash("md5")
+      .update(config.password)
+      .digest("hex")
+      .toUpperCase();
+    this.hashedSha256Password = crypto
+      .createHash("sha256")
+      .update(config.password)
+      .digest("hex")
+      .toUpperCase();
     this.passwordEncryptionMethod = null;
     this.isSecureConnectionValue = null;
     this.stok = undefined;
@@ -104,7 +112,9 @@ class TapoCameraClient {
           this.onvifEvents = new EventEmitter();
 
           device.on("event", (event) => {
-            if (event?.topic?._?.match(/RuleEngine\/CellMotionDetector\/Motion$/)) {
+            if (
+              event?.topic?._?.match(/RuleEngine\/CellMotionDetector\/Motion$/)
+            ) {
               const motion = event.message.message.data.simpleItem.$.Value;
               if (motion !== this.lastMotionValue) {
                 this.lastMotionValue = Boolean(motion);
@@ -114,7 +124,7 @@ class TapoCameraClient {
           });
 
           resolve(this.onvifEvents);
-        }
+        },
       );
     });
   }
@@ -241,14 +251,20 @@ class TapoCameraClient {
       };
     }
 
-    const responseLogin = await this.fetch(`https://${this.config.ipAddress}`, fetchParams);
+    const responseLogin = await this.fetch(
+      `https://${this.config.ipAddress}`,
+      fetchParams,
+    );
     const responseLoginData = responseLogin.data;
 
     if (!responseLoginData) {
       throw new Error("Empty response login data");
     }
 
-    if (responseLogin.status === 401 && responseLoginData.result?.data?.code === -40411) {
+    if (
+      responseLogin.status === 401 &&
+      responseLoginData.result?.data?.code === -40411
+    ) {
       throw new Error("Invalid credentials");
     }
 
@@ -258,7 +274,11 @@ class TapoCameraClient {
       const nonce = responseLoginData.result?.data?.nonce;
       const deviceConfirm = responseLoginData.result?.data?.device_confirm;
 
-      if (nonce && deviceConfirm && this.validateDeviceConfirm(nonce, deviceConfirm)) {
+      if (
+        nonce &&
+        deviceConfirm &&
+        this.validateDeviceConfirm(nonce, deviceConfirm)
+      ) {
         const digestPasswd = crypto
           .createHash("sha256")
           .update(this.getHashedPassword() + this.cnonce + nonce)
@@ -291,7 +311,10 @@ class TapoCameraClient {
           this.seq = responseData.result.start_seq;
         }
       } else {
-        if (responseLoginData.error_code === -40413 && loginRetryCount < this.MAX_LOGIN_RETRIES) {
+        if (
+          responseLoginData.error_code === -40413 &&
+          loginRetryCount < this.MAX_LOGIN_RETRIES
+        ) {
           return this.refreshStok(loginRetryCount + 1);
         }
         throw new Error("Invalid device confirm");
@@ -302,8 +325,13 @@ class TapoCameraClient {
       responseData = responseLoginData;
     }
 
-    if (responseData.result?.data?.sec_left && responseData.result.data.sec_left > 0) {
-      throw new Error(`Temporary Suspension: Try again in ${responseData.result.data.sec_left} seconds`);
+    if (
+      responseData.result?.data?.sec_left &&
+      responseData.result.data.sec_left > 0
+    ) {
+      throw new Error(
+        `Temporary Suspension: Try again in ${responseData.result.data.sec_left} seconds`,
+      );
     }
 
     if (responseData?.result?.stok) {
@@ -311,7 +339,10 @@ class TapoCameraClient {
       return;
     }
 
-    if (responseData?.error_code === -40413 && loginRetryCount < this.MAX_LOGIN_RETRIES) {
+    if (
+      responseData?.error_code === -40413 &&
+      loginRetryCount < this.MAX_LOGIN_RETRIES
+    ) {
       return this.refreshStok(loginRetryCount + 1);
     }
 
@@ -375,7 +406,10 @@ class TapoCameraClient {
     decrypted += decipher.final("utf8");
 
     const paddingLength = decrypted.charCodeAt(decrypted.length - 1);
-    if (paddingLength > this.AES_BLOCK_SIZE || paddingLength > decrypted.length) {
+    if (
+      paddingLength > this.AES_BLOCK_SIZE ||
+      paddingLength > decrypted.length
+    ) {
       throw new Error("Invalid padding");
     }
     for (let i = decrypted.length - paddingLength; i < decrypted.length; i++) {
@@ -418,7 +452,9 @@ class TapoCameraClient {
           const encryptedRequest = {
             method: "securePassthrough",
             params: {
-              request: this.encryptRequest(JSON.stringify(req)).toString("base64"),
+              request: this.encryptRequest(JSON.stringify(req)).toString(
+                "base64",
+              ),
             },
           };
           fetchParams = {
@@ -440,7 +476,9 @@ class TapoCameraClient {
         if (isSecureConnection) {
           const encryptedResponse = response.data;
           if (encryptedResponse?.result?.response) {
-            const decryptedResponse = this.decryptResponse(encryptedResponse.result.response);
+            const decryptedResponse = this.decryptResponse(
+              encryptedResponse.result.response,
+            );
             responseData = JSON.parse(decryptedResponse);
           }
         } else {
@@ -454,10 +492,17 @@ class TapoCameraClient {
         if (responseData && responseData.error_code !== 0) {
           const errorCode = String(responseData.error_code);
           const errorMessage = ERROR_CODES_MAP[errorCode] || "Unknown error";
-          this.log("debug", `API request failed with error code ${errorCode}: ${errorMessage}`);
+          this.log(
+            "debug",
+            `API request failed with error code ${errorCode}: ${errorMessage}`,
+          );
         }
 
-        if (!responseData || responseData.error_code === -40401 || responseData.error_code === -1) {
+        if (
+          !responseData ||
+          responseData.error_code === -40401 ||
+          responseData.error_code === -1
+        ) {
           this.stok = undefined;
           return this.apiRequest(req, loginRetryCount + 1);
         }
@@ -485,7 +530,9 @@ class TapoCameraClient {
     }
 
     const method = this.SERVICE_MAP[service](value).method;
-    const operation = responseData.result.responses.find((e) => e.method === method);
+    const operation = responseData.result.responses.find(
+      (e) => e.method === method,
+    );
     if (operation?.error_code !== 0) {
       throw new Error(`Failed to perform ${service} action`);
     }
@@ -516,9 +563,7 @@ class TapoCameraClient {
     const responseData = await this.apiRequest({
       method: "multipleRequest",
       params: {
-        requests: [
-          { method: "getSnapshot", params: { name: ["snapshot"] } },
-        ],
+        requests: [{ method: "getSnapshot", params: { name: ["snapshot"] } }],
       },
     });
     const op = responseData.result?.responses?.[0];
@@ -528,15 +573,75 @@ class TapoCameraClient {
     return null;
   }
 
+  async getBatteryInfo() {
+    try {
+      const responseData = await this.apiRequest({
+        method: "multipleRequest",
+        params: {
+          requests: [
+            {
+              method: "getBatteryInfo",
+              params: { battery_info: { name: ["battery_info"] } },
+            },
+          ],
+        },
+      });
+      const op = responseData.result?.responses?.[0];
+      if (op?.result?.battery_info) {
+        return {
+          percent:
+            op.result.battery_info.battery_percent ??
+            op.result.battery_info.percent,
+          charging:
+            op.result.battery_info.charging_status === "on" ||
+            op.result.battery_info.charging_status === "charging",
+          low:
+            (op.result.battery_info.battery_percent ??
+              op.result.battery_info.percent ??
+              100) <= 20,
+        };
+      }
+    } catch (_) {
+      // Battery info endpoint not available — camera is likely mains-powered
+    }
+    return null;
+  }
+
+  async getDeviceType() {
+    try {
+      const info = await this.getBasicInfo();
+      const model = (info?.device_model || info?.model || "").toLowerCase();
+      // Detect doorbell cameras by model prefix
+      if (/^(d230|d235|d210|d130)/i.test(model)) {
+        return "doorbell";
+      }
+      return "camera";
+    } catch (_) {
+      return "camera";
+    }
+  }
+
   async getStatus() {
     const responseData = await this.apiRequest({
       method: "multipleRequest",
       params: {
         requests: [
-          { method: "getAlertConfig", params: { msg_alarm: { name: "chn1_msg_alarm_info" } } },
-          { method: "getLensMaskConfig", params: { lens_mask: { name: "lens_mask_info" } } },
-          { method: "getMsgPushConfig", params: { msg_push: { name: "chn1_msg_push_info" } } },
-          { method: "getDetectionConfig", params: { motion_detection: { name: "motion_det" } } },
+          {
+            method: "getAlertConfig",
+            params: { msg_alarm: { name: "chn1_msg_alarm_info" } },
+          },
+          {
+            method: "getLensMaskConfig",
+            params: { lens_mask: { name: "lens_mask_info" } },
+          },
+          {
+            method: "getMsgPushConfig",
+            params: { msg_push: { name: "chn1_msg_push_info" } },
+          },
+          {
+            method: "getDetectionConfig",
+            params: { motion_detection: { name: "motion_det" } },
+          },
           { method: "getLedStatus", params: { led: { name: "config" } } },
         ],
       },
@@ -546,15 +651,28 @@ class TapoCameraClient {
 
     const alert = operations.find((r) => r.method === "getAlertConfig");
     const lensMask = operations.find((r) => r.method === "getLensMaskConfig");
-    const notifications = operations.find((r) => r.method === "getMsgPushConfig");
-    const motionDetection = operations.find((r) => r.method === "getDetectionConfig");
+    const notifications = operations.find(
+      (r) => r.method === "getMsgPushConfig",
+    );
+    const motionDetection = operations.find(
+      (r) => r.method === "getDetectionConfig",
+    );
     const led = operations.find((r) => r.method === "getLedStatus");
 
     return {
-      alarm: alert ? alert.result.msg_alarm.chn1_msg_alarm_info.enabled === "on" : undefined,
-      eyes: lensMask ? lensMask.result.lens_mask.lens_mask_info.enabled === "off" : undefined,
-      notifications: notifications ? notifications.result.msg_push.chn1_msg_push_info.notification_enabled === "on" : undefined,
-      motionDetection: motionDetection ? motionDetection.result.motion_detection.motion_det.enabled === "on" : undefined,
+      alarm: alert
+        ? alert.result.msg_alarm.chn1_msg_alarm_info.enabled === "on"
+        : undefined,
+      eyes: lensMask
+        ? lensMask.result.lens_mask.lens_mask_info.enabled === "off"
+        : undefined,
+      notifications: notifications
+        ? notifications.result.msg_push.chn1_msg_push_info
+            .notification_enabled === "on"
+        : undefined,
+      motionDetection: motionDetection
+        ? motionDetection.result.motion_detection.motion_det.enabled === "on"
+        : undefined,
       led: led ? led.result.led.config.enabled === "on" : undefined,
     };
   }

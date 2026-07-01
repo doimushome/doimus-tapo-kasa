@@ -6,6 +6,10 @@ let cameraDevices = new Map();
 let hubPollTimer = null;
 let cameraPollTimers = new Map();
 let savedApi = null;
+// Live view: deviceId → ffmpeg child process
+let liveViewProcesses = new Map();
+// Snapshot cooldown: deviceId → last snapshot timestamp (ms)
+let snapshotCooldowns = new Map();
 
 async function discoverHubDevices(cfg, api) {
   const hubsConfig = cfg.hubs;
@@ -241,6 +245,115 @@ async function pollHubDevices(cfg, api) {
   }
 }
 
+// ── Snapshot capture + dual-store (MJPEG + Image history) ──────────────
+async function captureAndStoreSnapshot(did, camConfig, client, api) {
+  try {
+    const frame = await client.getSnapshot();
+    if (!frame || frame.length === 0) return;
+
+    // MJPEG stream for live subscribers
+    api.sendMjpegFrame(did, "main", frame);
+
+    // Image history store — enables static snapshot retrieval in the mobile app
+    api.updateDeviceImage(did, "snapshot_latest", frame, "image/jpeg");
+  } catch (_) {
+    // Snapshot is best-effort
+  }
+}
+
+// ── RTSP → MJPEG relay for live view (p2p_start / p2p_stop) ───────────
+async function startLiveView(did, camConfig, api) {
+  if (liveViewProcesses.has(did)) {
+    api.log("debug", `Live view already active for ${camConfig.name}`);
+    return;
+  }
+
+  const rtspUrl = `rtsp://${camConfig.streamUser}:${camConfig.streamPassword}@${camConfig.ipAddress}:554/stream1`;
+
+  api.log("info", `Starting live view for ${camConfig.name} via ${rtspUrl}`);
+
+  try {
+    const { spawn } = require("child_process");
+    const proc = spawn(
+      "ffmpeg",
+      [
+        "-i",
+        rtspUrl,
+        "-f",
+        "image2pipe",
+        "-vcodec",
+        "mjpeg",
+        "-q:v",
+        "10",
+        "-r",
+        "5", // 5 fps is enough for live view
+        "-vf",
+        "scale=640:-1", // scale down for bandwidth
+        "pipe:1",
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+
+    let buffer = Buffer.alloc(0);
+    const SOI = Buffer.from([0xff, 0xd8]);
+    const EOI = Buffer.from([0xff, 0xd9]);
+
+    proc.stderr.on("data", () => {}); // suppress ffmpeg logs
+
+    proc.stdout.on("data", (chunk) => {
+      buffer = Buffer.concat([buffer, chunk]);
+
+      // Extract complete JPEG frames from the MJPEG pipe stream
+      while (true) {
+        const soiIdx = buffer.indexOf(SOI);
+        if (soiIdx === -1) break;
+
+        const eoiIdx = buffer.indexOf(EOI, soiIdx + 2);
+        if (eoiIdx === -1) break;
+
+        const jpeg = buffer.subarray(soiIdx, eoiIdx + 2);
+        buffer = buffer.subarray(eoiIdx + 2);
+
+        if (jpeg.length > 0) {
+          api.sendMjpegFrame(did, "main", jpeg);
+          api.updateDeviceImage(did, "snapshot_latest", jpeg, "image/jpeg");
+        }
+      }
+    });
+
+    proc.on("error", (err) => {
+      api.log(
+        "error",
+        `Live view ffmpeg error for ${camConfig.name}: ${err.message}`,
+      );
+      liveViewProcesses.delete(did);
+    });
+
+    proc.on("close", (code) => {
+      api.log("info", `Live view stopped for ${camConfig.name} (code=${code})`);
+      liveViewProcesses.delete(did);
+    });
+
+    liveViewProcesses.set(did, proc);
+  } catch (e) {
+    api.log(
+      "error",
+      `Failed to start live view for ${camConfig.name}: ${e.message}`,
+    );
+  }
+}
+
+function stopLiveView(did, api) {
+  const proc = liveViewProcesses.get(did);
+  if (!proc) return;
+  api.log("info", `Stopping live view for ${did}`);
+  try {
+    proc.kill("SIGTERM");
+  } catch (_) {}
+  liveViewProcesses.delete(did);
+}
+
+// ── Camera discovery ──────────────────────────────────────────────────
 async function discoverCameras(cfg, api) {
   const cameras = cfg.cameras || [];
 
@@ -259,6 +372,9 @@ async function discoverCameras(cfg, api) {
       try {
         await client.getStok();
         const status = await client.getStatus();
+        const deviceType = await client.getDeviceType();
+        const isDoorbell = deviceType === "doorbell";
+        const isBatteryPowered = camConfig.batteryPowered || false;
 
         const capabilities = [];
         const state = {};
@@ -287,23 +403,62 @@ async function discoverCameras(cfg, api) {
         capabilities.push("motion");
         state.motion = false;
 
+        // Live view via RTSP → MJPEG relay
+        capabilities.push("p2p_start");
+        capabilities.push("p2p_stop");
+
+        // Doorbell support
+        if (isDoorbell) {
+          capabilities.push("doorbell");
+          state.doorbell = false;
+        }
+
+        // Battery support for battery-powered cameras
+        if (isBatteryPowered && !camConfig.disableBatteryReporting) {
+          const batteryInfo = await client.getBatteryInfo();
+          if (batteryInfo) {
+            capabilities.push("battery");
+            state.battery = batteryInfo.percent ?? 100;
+            capabilities.push("battery_low");
+            state.battery_low = batteryInfo.low ?? false;
+          }
+        }
+
+        const finalType = isDoorbell ? "doorbell" : "camera";
         api.registerDevice({
           id: did,
           name: camConfig.name,
-          type: "camera",
+          type: finalType,
           capabilities,
           state,
         });
         api.log(
           "info",
-          `Registered camera: ${camConfig.name} (${camConfig.ipAddress})`,
+          `Registered ${finalType}: ${camConfig.name} (${camConfig.ipAddress})`,
         );
-        cameraDevices.set(did, { config: camConfig, client, status });
+        cameraDevices.set(did, {
+          config: camConfig,
+          client,
+          status,
+          isDoorbell,
+          isBatteryPowered,
+        });
 
+        // ── ONVIF motion detection ─────────────────────────────────
         try {
           const eventEmitter = await client.getEventEmitter();
           eventEmitter.on("motion", (motionDetected) => {
             api.updateDeviceState(did, { motion: motionDetected });
+            // Event-driven snapshot capture: trigger on motion start
+            if (motionDetected && camConfig.snapshotOnMotion) {
+              const now = Date.now();
+              const cooldownMs = camConfig.snapshotCooldown || 5000;
+              const last = snapshotCooldowns.get(did) || 0;
+              if (now - last >= cooldownMs) {
+                snapshotCooldowns.set(did, now);
+                captureAndStoreSnapshot(did, camConfig, client, api);
+              }
+            }
           });
         } catch (e) {
           api.log(
@@ -312,6 +467,7 @@ async function discoverCameras(cfg, api) {
           );
         }
 
+        // ── Periodic status + snapshot poll ────────────────────────
         const pullInterval = camConfig.pullInterval || 60000;
         const timer = setInterval(async () => {
           try {
@@ -330,19 +486,23 @@ async function discoverCameras(cfg, api) {
             if (!camConfig.disableLEDToggle)
               updates.led = newStatus.led ?? false;
 
+            // Battery update for battery-powered cameras
+            if (isBatteryPowered && !camConfig.disableBatteryReporting) {
+              const batteryInfo = await client.getBatteryInfo();
+              if (batteryInfo) {
+                updates.battery = batteryInfo.percent ?? 100;
+                updates.battery_low = batteryInfo.low ?? false;
+              }
+            }
+
             api.updateDeviceState(did, updates);
           } catch (e) {
             api.log("debug", `Poll error for camera ${did}: ${e.message}`);
           }
 
-          // MJPEG frame — best-effort snapshot every poll cycle
-          try {
-            const frame = await client.getSnapshot();
-            if (frame) {
-              api.sendMjpegFrame(did, "main", frame);
-            }
-          } catch (_) {
-            /* snapshot is best-effort */
+          // Periodic snapshot capture (when ONVIF motion is unavailable or snapshotOnMotion is disabled)
+          if (!camConfig.snapshotOnMotion) {
+            await captureAndStoreSnapshot(did, camConfig, client, api);
           }
         }, pullInterval);
         if (timer.unref) timer.unref();
@@ -364,6 +524,8 @@ async function discoverCameras(cfg, api) {
         clearInterval(cameraPollTimers.get(did));
         cameraPollTimers.delete(did);
       }
+      stopLiveView(did, api);
+      snapshotCooldowns.delete(did);
       cameraDevices.delete(did);
       api.log("info", `Removed stale camera: ${did}`);
     }
@@ -406,24 +568,39 @@ module.exports = {
           );
         }
       } else if (cameraDevices.has(deviceId)) {
-        const state = cameraDevices.get(deviceId);
+        const camState = cameraDevices.get(deviceId);
 
         try {
+          // ── Standard camera toggles ──────────────────────────────
           if (key === "privacy_mode") {
-            await state.client.setStatus("eyes", !value);
+            await camState.client.setStatus("eyes", !value);
             api.updateDeviceState(deviceId, { privacy_mode: value });
           } else if (key === "alarm") {
-            await state.client.setStatus("alarm", value);
+            await camState.client.setStatus("alarm", value);
             api.updateDeviceState(deviceId, { alarm: value });
           } else if (key === "notifications") {
-            await state.client.setStatus("notifications", value);
+            await camState.client.setStatus("notifications", value);
             api.updateDeviceState(deviceId, { notifications: value });
           } else if (key === "motion_detection") {
-            await state.client.setStatus("motionDetection", value);
+            await camState.client.setStatus("motionDetection", value);
             api.updateDeviceState(deviceId, { motion_detection: value });
           } else if (key === "led") {
-            await state.client.setStatus("led", value);
+            await camState.client.setStatus("led", value);
             api.updateDeviceState(deviceId, { led: value });
+          }
+          // ── Live view commands (p2p_start / p2p_stop) ──────────
+          else if (key === "p2p_start") {
+            startLiveView(deviceId, camState.config, api);
+          } else if (key === "p2p_stop") {
+            stopLiveView(deviceId, api);
+          }
+          // ── WebRTC signaling relay from mobile app ─────────────
+          else if (key === "webrtc" && value && typeof value === "object") {
+            if (value.action === "start") {
+              startLiveView(deviceId, camState.config, api);
+            } else if (value.action === "stop") {
+              stopLiveView(deviceId, api);
+            }
           }
         } catch (e) {
           api.log(
@@ -460,6 +637,12 @@ module.exports = {
       clearInterval(timer);
     }
     cameraPollTimers.clear();
+
+    for (const [did] of liveViewProcesses) {
+      stopLiveView(did, savedApi);
+    }
+    liveViewProcesses.clear();
+    snapshotCooldowns.clear();
 
     hubDevices.clear();
     cameraDevices.clear();

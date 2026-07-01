@@ -1,6 +1,6 @@
 # doimus-tapo-kasa
 
-Doimus native plugin for TP-Link Tapo/Kasa devices. Supports both Kasa/Tapo smart hubs with sensors and Tapo WiFi security cameras.
+Doimus native plugin for TP-Link Tapo/Kasa devices. Supports both Kasa/Tapo smart hubs with sensors and Tapo WiFi security cameras (including battery-powered models and doorbells).
 
 ## Features
 
@@ -13,7 +13,7 @@ Doimus native plugin for TP-Link Tapo/Kasa devices. Supports both Kasa/Tapo smar
 - Motion sensors
 - Automatic device discovery and polling
 
-### Tapo WiFi Cameras
+### Tapo WiFi Cameras & Doorbells
 
 - Privacy mode toggle (lens mask)
 - Alarm sound toggle
@@ -21,6 +21,11 @@ Doimus native plugin for TP-Link Tapo/Kasa devices. Supports both Kasa/Tapo smar
 - Motion detection toggle
 - LED indicator toggle
 - Motion detection via ONVIF
+- **Live view** via RTSP → MJPEG relay (requires ffmpeg on the host)
+- **Battery level reporting** for battery-powered cameras (C420, C425, D230, etc.)
+- **Doorbell** detection and doorbell press events (D230, D235, D210, D130)
+- **Event-driven snapshots** — capture on ONVIF motion events instead of constant polling (battery-friendly)
+- **Image history** — snapshots stored in backend image store for retrieval when not actively streaming
 
 ## Configuration
 
@@ -46,7 +51,11 @@ Each camera in the `cameras` array:
 | `password` | string | — | Tapo account password |
 | `streamUser` | string | — | RTSP stream username (from Camera Account settings) |
 | `streamPassword` | string | — | RTSP stream password (from Camera Account settings) |
+| `batteryPowered` | boolean | `false` | Enable for battery-powered cameras (C420, C425, D230, D235) |
+| `disableBatteryReporting` | boolean | `false` | Skip battery status queries |
 | `pullInterval` | integer | `60000` | Status polling interval in ms |
+| `snapshotOnMotion` | boolean | `true` | Capture snapshots only on ONVIF motion events (battery-friendly) |
+| `snapshotCooldown` | integer | `5000` | Minimum ms between motion-triggered snapshots |
 | `disablePrivacyToggle` | boolean | `false` | Disable privacy mode toggle |
 | `disableAlarmToggle` | boolean | `false` | Disable alarm toggle |
 | `disableNotificationsToggle` | boolean | `false` | Disable notifications toggle |
@@ -74,7 +83,37 @@ Each camera in the `cameras` array:
 | `notifications` | `true` = push notifications enabled |
 | `motion_detection` | `true` = motion detection enabled |
 | `led` | `true` = LED indicator on |
-| `motion` | `true` = motion detected |
+| `motion` | `true` = motion detected (via ONVIF) |
+| `p2p_start` | Start live view (RTSP → MJPEG relay via ffmpeg) |
+| `p2p_stop` | Stop live view |
+
+### Battery-Powered Cameras
+
+When `batteryPowered: true` is set, the following additional capabilities are available:
+
+| Capability | Description |
+|------------|-------------|
+| `battery` | Battery percentage (0-100) |
+| `battery_low` | `true` when battery ≤ 20% |
+
+### Doorbell Cameras
+
+Tapo doorbell cameras (D230, D235, D210, D130) are auto-detected by model prefix. Additional capabilities:
+
+| Capability | Description |
+|------------|-------------|
+| `doorbell` | `true` when doorbell button is pressed (via ONVIF event) |
+
+## Live View
+
+The plugin supports live view via RTSP → MJPEG relay. When enabled, the mobile app can start/stop live streaming:
+
+- **Start**: Mobile sends `p2p_start` command → plugin spawns ffmpeg to pull RTSP stream and push MJPEG frames
+- **Stop**: Mobile sends `p2p_stop` command → plugin kills ffmpeg
+
+**Requirements**: `ffmpeg` must be installed on the host running Doimus. On Orange Pi / Raspberry Pi: `sudo apt install ffmpeg`.
+
+The stream is bandwidth-optimized: 5 fps at 640px width with quality level 10.
 
 ## Camera Setup
 
@@ -89,6 +128,14 @@ For firmware build 230921 and higher, enable third-party compatibility:
 To find RTSP credentials:
 - Tapo app > Settings > Advanced Settings > Camera Account
 - Username must be alphanumeric only (no special characters)
+
+### Battery Camera Notes
+
+For battery-powered Tapo cameras (C420, C425, D230, D235):
+
+1. Set `batteryPowered: true` in the camera config
+2. `snapshotOnMotion` defaults to `true` — snapshots are only captured when ONVIF motion is detected, saving battery
+3. The camera's battery level and low-battery status are polled during status updates
 
 ## Credits
 
