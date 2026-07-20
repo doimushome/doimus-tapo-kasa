@@ -354,13 +354,23 @@ function stopLiveView(did, api) {
 }
 
 // ── Camera discovery ──────────────────────────────────────────────────
+function makeCameraId(camConfig) {
+  const crypto = require("crypto");
+  const hash = crypto
+    .createHash("sha256")
+    .update(JSON.stringify({ name: camConfig.name, user: camConfig.streamUser }))
+    .digest("hex")
+    .slice(0, 16);
+  return `camera-${hash}`;
+}
+
 async function discoverCameras(cfg, api) {
   const cameras = cfg.cameras || [];
 
   const seen = new Set();
 
   for (const camConfig of cameras) {
-    const did = `camera-${camConfig.ipAddress}`;
+    const did = makeCameraId(camConfig);
     seen.add(did);
 
     if (!cameraDevices.has(did)) {
