@@ -1,6 +1,12 @@
 const { TapoConnect } = require("./TapoConnect");
 const { TapoCameraClient } = require("./TapoCamera");
 
+function createLogger(api, prefix) {
+  return (level, msg) => log(level, `[${prefix}] ${msg}`);
+}
+
+let log = null;
+
 let hubDevices = new Map();
 let cameraDevices = new Map();
 let hubPollTimer = null;
@@ -18,7 +24,7 @@ async function discoverHubDevices(cfg, api) {
     !hubsConfig?.password ||
     !hubsConfig?.devices?.length
   ) {
-    api.log("debug", "No hub configuration provided, skipping hub discovery");
+    log("debug", "No hub configuration provided, skipping hub discovery");
     return;
   }
 
@@ -27,9 +33,9 @@ async function discoverHubDevices(cfg, api) {
 
   for (const hubIp of devices) {
     try {
-      api.log("info", `Connecting to hub at ${hubIp}...`);
+      log("info", `Connecting to hub at ${hubIp}...`);
       const tapoConnect = new TapoConnect(
-        (level, msg) => api.log(level, msg),
+        (level, msg) => log(level, msg),
         email,
         password,
         hubIp,
@@ -44,7 +50,7 @@ async function discoverHubDevices(cfg, api) {
         for (const device of TapoConnect.parseDevices(
           devicesResponse,
           tapoConnect,
-          (level, msg) => api.log(level, msg),
+          (level, msg) => log(level, msg),
         )) {
           deviceMap.set(device.uniqueId, device);
         }
@@ -55,7 +61,7 @@ async function discoverHubDevices(cfg, api) {
         index += 10;
       } while (index < (totalDevices ?? 0));
     } catch (e) {
-      api.log("error", `Failed to connect to hub ${hubIp}: ${e.message}`);
+      log("error", `Failed to connect to hub ${hubIp}: ${e.message}`);
     }
   }
 
@@ -134,7 +140,7 @@ async function discoverHubDevices(cfg, api) {
         capabilities,
         state,
       });
-      api.log(
+      log(
         "info",
         `Registered hub ${type}: ${device.name} (${device.model})`,
       );
@@ -147,7 +153,7 @@ async function discoverHubDevices(cfg, api) {
   for (const [did] of hubDevices) {
     if (!seen.has(did)) {
       hubDevices.delete(did);
-      api.log("info", `Removed stale hub device: ${did}`);
+      log("info", `Removed stale hub device: ${did}`);
     }
   }
 }
@@ -240,7 +246,7 @@ async function pollHubDevices(cfg, api) {
         }
       }
     } catch (e) {
-      api.log("debug", `Poll error for hub device ${did}: ${e.message}`);
+      log("debug", `Poll error for hub device ${did}: ${e.message}`);
     }
   }
 }
@@ -264,13 +270,13 @@ async function captureAndStoreSnapshot(did, camConfig, client, api) {
 // ── RTSP → MJPEG relay for live view (p2p_start / p2p_stop) ───────────
 async function startLiveView(did, camConfig, api) {
   if (liveViewProcesses.has(did)) {
-    api.log("debug", `Live view already active for ${camConfig.name}`);
+    log("debug", `Live view already active for ${camConfig.name}`);
     return;
   }
 
   const rtspUrl = `rtsp://${camConfig.streamUser}:${camConfig.streamPassword}@${camConfig.ipAddress}:554/stream1`;
 
-  api.log("info", `Starting live view for ${camConfig.name} via ${rtspUrl}`);
+  log("info", `Starting live view for ${camConfig.name} via ${rtspUrl}`);
 
   try {
     const { spawn } = require("child_process");
@@ -322,7 +328,7 @@ async function startLiveView(did, camConfig, api) {
     });
 
     proc.on("error", (err) => {
-      api.log(
+      log(
         "error",
         `Live view ffmpeg error for ${camConfig.name}: ${err.message}`,
       );
@@ -330,13 +336,13 @@ async function startLiveView(did, camConfig, api) {
     });
 
     proc.on("close", (code) => {
-      api.log("info", `Live view stopped for ${camConfig.name} (code=${code})`);
+      log("info", `Live view stopped for ${camConfig.name} (code=${code})`);
       liveViewProcesses.delete(did);
     });
 
     liveViewProcesses.set(did, proc);
   } catch (e) {
-    api.log(
+    log(
       "error",
       `Failed to start live view for ${camConfig.name}: ${e.message}`,
     );
@@ -346,7 +352,7 @@ async function startLiveView(did, camConfig, api) {
 function stopLiveView(did, api) {
   const proc = liveViewProcesses.get(did);
   if (!proc) return;
-  api.log("info", `Stopping live view for ${did}`);
+  log("info", `Stopping live view for ${did}`);
   try {
     proc.kill("SIGTERM");
   } catch (_) {}
@@ -375,7 +381,7 @@ async function discoverCameras(cfg, api) {
 
     if (!cameraDevices.has(did)) {
       const client = new TapoCameraClient(
-        (level, msg) => api.log(level, msg),
+        (level, msg) => log(level, msg),
         camConfig,
       );
 
@@ -442,7 +448,7 @@ async function discoverCameras(cfg, api) {
           capabilities,
           state,
         });
-        api.log(
+        log(
           "info",
           `Registered ${finalType}: ${camConfig.name} (${camConfig.ipAddress})`,
         );
@@ -471,7 +477,7 @@ async function discoverCameras(cfg, api) {
             }
           });
         } catch (e) {
-          api.log(
+          log(
             "debug",
             `ONVIF motion detection unavailable for ${camConfig.name}: ${e.message}`,
           );
@@ -507,7 +513,7 @@ async function discoverCameras(cfg, api) {
 
             api.updateDeviceState(did, updates);
           } catch (e) {
-            api.log("debug", `Poll error for camera ${did}: ${e.message}`);
+            log("debug", `Poll error for camera ${did}: ${e.message}`);
           }
 
           // Periodic snapshot capture (when ONVIF motion is unavailable or snapshotOnMotion is disabled)
@@ -518,7 +524,7 @@ async function discoverCameras(cfg, api) {
         if (timer.unref) timer.unref();
         cameraPollTimers.set(did, timer);
       } catch (e) {
-        api.log(
+        log(
           "error",
           `Failed to register camera ${camConfig.name}: ${e.message}`,
         );
@@ -537,7 +543,7 @@ async function discoverCameras(cfg, api) {
       stopLiveView(did, api);
       snapshotCooldowns.delete(did);
       cameraDevices.delete(did);
-      api.log("info", `Removed stale camera: ${did}`);
+      log("info", `Removed stale camera: ${did}`);
     }
   }
 }
@@ -545,7 +551,8 @@ async function discoverCameras(cfg, api) {
 module.exports = {
   start(cfg, api) {
     savedApi = api;
-    api.log("info", "Initializing Tapo/Kasa plugin...");
+    log = createLogger(api, "TapoKasa");
+    log("info", "Initializing Tapo/Kasa plugin...");
 
     api.onCommand(async (deviceId, key, value) => {
       if (hubDevices.has(deviceId)) {
@@ -572,7 +579,7 @@ module.exports = {
             api.updateDeviceState(deviceId, { heating_state: value });
           }
         } catch (e) {
-          api.log(
+          log(
             "error",
             `Failed to send command to hub device ${deviceId}: ${e.message}`,
           );
@@ -613,7 +620,7 @@ module.exports = {
             }
           }
         } catch (e) {
-          api.log(
+          log(
             "error",
             `Failed to send command to camera ${deviceId}: ${e.message}`,
           );
@@ -622,17 +629,17 @@ module.exports = {
     });
 
     discoverHubDevices(cfg, api).catch((e) =>
-      api.log("error", `Hub discovery error: ${e.message}`),
+      log("error", `Hub discovery error: ${e.message}`),
     );
     discoverCameras(cfg, api).catch((e) =>
-      api.log("error", `Camera discovery error: ${e.message}`),
+      log("error", `Camera discovery error: ${e.message}`),
     );
 
     const pollInterval = (cfg.hubs?.pollInterval || 60) * 1000;
     hubPollTimer = setInterval(
       () =>
         pollHubDevices(cfg, api).catch((e) =>
-          api.log("error", `Hub poll error: ${e.message}`),
+          log("error", `Hub poll error: ${e.message}`),
         ),
       pollInterval,
     );
