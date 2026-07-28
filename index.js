@@ -262,8 +262,8 @@ async function captureAndStoreSnapshot(did, camConfig, client, api) {
 
     // Image history store — enables static snapshot retrieval in the mobile app
     api.updateDeviceImage(did, "snapshot_latest", frame, "image/jpeg");
-  } catch (_) {
-    // Snapshot is best-effort
+  } catch (err) {
+    log("error", "Snapshot error: " + err.message);
   }
 }
 
@@ -304,7 +304,9 @@ async function startLiveView(did, camConfig, api) {
     const SOI = Buffer.from([0xff, 0xd8]);
     const EOI = Buffer.from([0xff, 0xd9]);
 
-    proc.stderr.on("data", () => {}); // suppress ffmpeg logs
+    proc.stderr.on("data", (data) => {
+      log("debug", "ffmpeg: " + data.toString());
+    });
 
     proc.stdout.on("data", (chunk) => {
       buffer = Buffer.concat([buffer, chunk]);
