@@ -112,14 +112,17 @@ class TapoCameraClient {
           this.onvifEvents = new EventEmitter();
 
           device.on("event", (event) => {
-            if (
-              event?.topic?._?.match(/RuleEngine\/CellMotionDetector\/Motion$/)
-            ) {
-              const motion = event.message.message.data.simpleItem.$.Value;
+            const topic = event?.topic?._ ?? "";
+            const value = event?.message?.message?.data?.simpleItem?.$?.Value;
+            if (topic.match(/RuleEngine\/CellMotionDetector\/Motion$/)) {
+              const motion = value;
               if (motion !== this.lastMotionValue) {
                 this.lastMotionValue = Boolean(motion);
                 this.onvifEvents.emit("motion", this.lastMotionValue);
               }
+            }
+            if (topic.match(/RuleEngine\/FieldDetector\/Field$/)) {
+              this.onvifEvents.emit("doorbell", value === "true");
             }
           });
 

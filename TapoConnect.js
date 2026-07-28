@@ -383,6 +383,12 @@ class TapoConnect {
         case "subg.trigger.temp-hmdt-sensor":
           deviceType = "temperature_humidity_sensor";
           break;
+        case "subg.trigger.temp-sensor":
+          deviceType = "temperature_sensor";
+          break;
+        case "subg.trigger.hmdt-sensor":
+          deviceType = "humidity_sensor";
+          break;
         case "subg.trv":
           deviceType = "thermostat";
           break;
@@ -418,7 +424,8 @@ class TapoConnect {
         deviceType,
         currentTemp: device.current_temp,
         currentHumidity: device.current_humidity,
-        sleep: device.trv_states?.every((state) => state === "shutdown") ?? false,
+        trvStates: device.trv_states ?? [],
+        isShutdown: device.trv_states?.every((state) => state === "shutdown") ?? false,
         targetTemp: device.target_temp,
         tempUnit: device.temp_unit,
         frostProtectionOn: device.frost_protection_on,

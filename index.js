@@ -16,6 +16,8 @@ let savedApi = null;
 let liveViewProcesses = new Map();
 // Snapshot cooldown: deviceId → last snapshot timestamp (ms)
 let snapshotCooldowns = new Map();
+// Doorbell auto-reset: deviceId → timeout handle
+let doorbellTimers = new Map();
 
 async function discoverHubDevices(cfg, api) {
   const hubsConfig = cfg.hubs;
@@ -88,6 +90,22 @@ async function discoverHubDevices(cfg, api) {
             battery_low: device.atLowBattery ?? false,
           };
           break;
+        case "temperature_sensor":
+          type = "sensor";
+          capabilities = ["temperature", "battery_low"];
+          state = {
+            temperature: device.currentTemp ?? 0,
+            battery_low: device.atLowBattery ?? false,
+          };
+          break;
+        case "humidity_sensor":
+          type = "sensor";
+          capabilities = ["humidity", "battery_low"];
+          state = {
+            humidity: device.currentHumidity ?? 0,
+            battery_low: device.atLowBattery ?? false,
+          };
+          break;
         case "thermostat":
           type = "thermostat";
           capabilities = [
@@ -100,7 +118,7 @@ async function discoverHubDevices(cfg, api) {
           state = {
             temperature: device.currentTemp ?? 0,
             target_temp: device.targetTemp ?? 0,
-            heating_state: device.sleep ? 0 : 1,
+            heating_state: device.isShutdown ? 0 : 1,
             min_target_temp: device.minControlTemp ?? 5,
             max_target_temp: device.maxControlTemp ?? 30,
           };
@@ -197,39 +215,30 @@ async function pollHubDevices(cfg, api) {
               battery_low: updated.atLowBattery ?? false,
             });
             break;
+          case "temperature_sensor":
+            api.updateDeviceState(did, {
+              temperature: updated.currentTemp ?? state.device.currentTemp,
+              battery_low: updated.atLowBattery ?? false,
+            });
+            break;
+          case "humidity_sensor":
+            api.updateDeviceState(did, {
+              humidity: updated.currentHumidity ?? state.device.currentHumidity,
+              battery_low: updated.atLowBattery ?? false,
+            });
+            break;
           case "thermostat":
             api.updateDeviceState(did, {
               temperature: updated.currentTemp ?? state.device.currentTemp,
               target_temp: updated.targetTemp ?? state.device.targetTemp,
-              heating_state: updated.sleep ? 0 : 1,
+              heating_state: updated.isShutdown ? 0 : 1,
             });
             break;
           case "contact_sensor":
-            try {
-              const triggerLogs = await state.tapoConnect.getChildTriggerLogs(
-                state.device.uniqueId,
-              );
-              const logs = triggerLogs?.trigger_log ?? [];
-              const lastEvent = logs[0];
-              if (lastEvent) {
-                const isOpen =
-                  lastEvent.event === "open" || lastEvent.event === "1";
-                api.updateDeviceState(did, {
-                  contact: isOpen,
-                  battery_low: updated.atLowBattery ?? false,
-                });
-              } else {
-                api.updateDeviceState(did, {
-                  contact: !!updated.contactOpen,
-                  battery_low: updated.atLowBattery ?? false,
-                });
-              }
-            } catch {
-              api.updateDeviceState(did, {
-                contact: !!updated.contactOpen,
-                battery_low: updated.atLowBattery ?? false,
-              });
-            }
+            api.updateDeviceState(did, {
+              contact: typeof updated.contactOpen === "boolean" ? updated.contactOpen : false,
+              battery_low: updated.atLowBattery ?? false,
+            });
             break;
           case "leak_sensor":
             api.updateDeviceState(did, {
@@ -462,7 +471,7 @@ async function discoverCameras(cfg, api) {
           isBatteryPowered,
         });
 
-        // ── ONVIF motion detection ─────────────────────────────────
+        // ── ONVIF event detection (motion + doorbell) ─────────────────
         try {
           const eventEmitter = await client.getEventEmitter();
           eventEmitter.on("motion", (motionDetected) => {
@@ -478,10 +487,27 @@ async function discoverCameras(cfg, api) {
               }
             }
           });
+          if (isDoorbell) {
+            eventEmitter.on("doorbell", (pressed) => {
+              if (pressed) {
+                if (doorbellTimers.has(did)) {
+                  clearTimeout(doorbellTimers.get(did));
+                }
+                api.updateDeviceState(did, { doorbell: true });
+                doorbellTimers.set(
+                  did,
+                  setTimeout(() => {
+                    api.updateDeviceState(did, { doorbell: false });
+                    doorbellTimers.delete(did);
+                  }, 5000),
+                );
+              }
+            });
+          }
         } catch (e) {
           log(
             "debug",
-            `ONVIF motion detection unavailable for ${camConfig.name}: ${e.message}`,
+            `ONVIF event detection unavailable for ${camConfig.name}: ${e.message}`,
           );
         }
 
@@ -543,6 +569,10 @@ async function discoverCameras(cfg, api) {
         cameraPollTimers.delete(did);
       }
       stopLiveView(did, api);
+      if (doorbellTimers.has(did)) {
+        clearTimeout(doorbellTimers.get(did));
+        doorbellTimers.delete(did);
+      }
       snapshotCooldowns.delete(did);
       cameraDevices.delete(did);
       log("info", `Removed stale camera: ${did}`);
@@ -661,6 +691,10 @@ module.exports = {
       stopLiveView(did, savedApi);
     }
     liveViewProcesses.clear();
+    for (const [did, timeout] of doorbellTimers) {
+      clearTimeout(timeout);
+    }
+    doorbellTimers.clear();
     snapshotCooldowns.clear();
 
     hubDevices.clear();
