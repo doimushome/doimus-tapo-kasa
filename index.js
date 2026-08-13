@@ -2,7 +2,7 @@ const { TapoConnect } = require("./TapoConnect");
 const { TapoCameraClient } = require("./TapoCamera");
 
 function createLogger(api, prefix) {
-  return (level, msg) => log(level, `[${prefix}] ${msg}`);
+  return (level, msg) => api.log(level, `[${prefix}] ${msg}`);
 }
 
 let log = null;
@@ -389,6 +389,18 @@ async function discoverCameras(cfg, api) {
   for (const camConfig of cameras) {
     const did = makeCameraId(camConfig);
     seen.add(did);
+
+    if (
+      !camConfig?.ipAddress ||
+      !camConfig?.password ||
+      !camConfig?.username
+    ) {
+      log(
+        "warn",
+        `Skipping camera '${camConfig?.name || "unnamed"}': ipAddress, username and password are required to connect`,
+      );
+      continue;
+    }
 
     if (!cameraDevices.has(did)) {
       const client = new TapoCameraClient(
