@@ -133,7 +133,7 @@ async function discoverHubDevices(cfg, api) {
           state = {
             temperature: device.currentTemp ?? 0,
             target_temp: device.targetTemp ?? 0,
-            heating_state: device.isShutdown ? 0 : 1,
+            heating_state: device.frostProtectionOn ? 0 : 1,
             min_target_temp: device.minControlTemp ?? 5,
             max_target_temp: device.maxControlTemp ?? 30,
           };
@@ -264,7 +264,7 @@ async function pollHubDevices(cfg, api) {
             api.updateDeviceState(did, {
               temperature: updated.currentTemp ?? state.device.currentTemp,
               target_temp: updated.targetTemp ?? state.device.targetTemp,
-              heating_state: updated.isShutdown ? 0 : 1,
+              heating_state: updated.frostProtectionOn ? 0 : 1,
             });
             break;
           case "contact_sensor":
