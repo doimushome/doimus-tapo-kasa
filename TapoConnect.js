@@ -96,23 +96,34 @@ function aesDecrypt(encryptedHex, key, iv) {
   return pkcs7Unpad(decrypted);
 }
 
+function encryptKlap(data, key, iv, seq) {
+  const crypto = require("crypto");
+  const cipher = crypto.createCipheriv(
+    "aes-128-cbc",
+    key,
+    Buffer.concat([iv.subarray(0, 12), seq]),
+  );
+  const part1 = cipher.update(JSON.stringify(data), "utf8");
+  const part2 = cipher.final();
+  return Buffer.concat([part1, part2]);
+}
+
 function encryptAndSignKlap(data, key, iv, sig, seq) {
-  const keySeq = Buffer.concat([key, seq]);
-  const ivSeq = Buffer.concat([iv, seq]);
-  const encrypted = aesEncrypt(JSON.stringify(data), keySeq.subarray(0, 16), ivSeq.subarray(0, 16));
-  const sigData = Buffer.concat([sig, seq, Buffer.from(JSON.stringify(data))]);
-  const signature = sha256(sigData).subarray(0, 16);
-  return Buffer.concat([encrypted, signature]);
+  const ciphertext = encryptKlap(data, key, iv, seq);
+  const signature = sha256(concatBuf(sig, seq, ciphertext));
+  return Buffer.concat([signature, ciphertext]);
 }
 
 function decryptKlap(data, key, iv, seq) {
-  const encryptedLength = data.length - 16;
-  const encrypted = data.subarray(0, encryptedLength);
-  const signature = data.subarray(encryptedLength);
-  const keySeq = Buffer.concat([key, seq]);
-  const ivSeq = Buffer.concat([iv, seq]);
-  const decrypted = aesDecrypt(encrypted.toString("hex"), keySeq.subarray(0, 16), ivSeq.subarray(0, 16));
-  return JSON.parse(decrypted);
+  const crypto = require("crypto");
+  const decipher = crypto.createDecipheriv(
+    "aes-128-cbc",
+    key,
+    Buffer.concat([iv.subarray(0, 12), seq]),
+  );
+  const part1 = decipher.update(data.subarray(32));
+  const part2 = decipher.final();
+  return JSON.parse(Buffer.concat([part1, part2]).toString("utf8"));
 }
 
 function generateKeyPair() {
@@ -146,6 +157,7 @@ function checkError(responseData) {
       case -1002:
         throw new Error("Incorrect request");
       case -1003:
+      case 1003:
         throw new Error("JSON format error");
       case -20601:
         throw new Error("Incorrect email or password");
@@ -322,11 +334,7 @@ class TapoConnect {
       this.token = undefined;
     }
     if (!this.usePassThroughProtocol) {
-      try {
-        await this.handshakeAndLoginKlap();
-      } catch (error) {
-        throw new Error(`Failed to connect via passthrough (${error.message}) and KLAP fallback also failed`);
-      }
+      await this.handshakeAndLoginKlap();
     }
   }
 
@@ -377,7 +385,7 @@ class TapoConnect {
       if (device.status !== "online") continue;
 
       let deviceType = null;
-      log?.debug(`Found device ${device.device_id} category=${device.category}`);
+      log?.("debug", `Found device ${device.device_id} category=${device.category}`);
 
       switch (device.category) {
         case "subg.trigger.temp-hmdt-sensor":
@@ -406,7 +414,7 @@ class TapoConnect {
       if (deviceType === null) {
         try {
           const nickname = device.nickname ? Buffer.from(device.nickname, "base64").toString() : "unknown";
-          log?.debug(`Skipping unsupported device ${device.device_id} (${nickname}) category=${device.category}`);
+          log?.("debug", `Skipping unsupported device ${device.device_id} (${nickname}) category=${device.category}`);
         } catch {
           // ignore decode errors
         }

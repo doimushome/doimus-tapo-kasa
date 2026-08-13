@@ -19,6 +19,21 @@ let snapshotCooldowns = new Map();
 // Doorbell auto-reset: deviceId → timeout handle
 let doorbellTimers = new Map();
 
+async function resolveContactState(device, tapoConnect) {
+  // The `open` field in get_child_device_list can lag for battery sensors;
+  // the last trigger event is the authoritative current state.
+  try {
+    const tl = await tapoConnect.getChildTriggerLogs(device.uniqueId);
+    const evt =
+      tl?.responseData?.result?.responses?.[0]?.result?.logs?.[0]?.event;
+    if (evt === "open") return true;
+    if (evt === "close") return false;
+  } catch (_) {
+    // fall through to the cached open field
+  }
+  return typeof device.contactOpen === "boolean" ? device.contactOpen : false;
+}
+
 async function discoverHubDevices(cfg, api) {
   const hubsConfig = cfg.hubs;
   if (
@@ -127,7 +142,7 @@ async function discoverHubDevices(cfg, api) {
           type = "sensor";
           capabilities = ["contact", "battery_low"];
           state = {
-            contact: !!device.contactOpen,
+            contact: await resolveContactState(device, device.tapoConnect),
             battery_low: device.atLowBattery ?? false,
           };
           break;
@@ -188,23 +203,41 @@ async function pollHubDevices(cfg, api) {
 
   const { ignoreSensors } = hubsConfig;
 
+  const byHub = new Map();
   for (const [did, state] of hubDevices) {
-    if (
-      ignoreSensors &&
-      state.device.deviceType === "temperature_humidity_sensor"
-    ) {
-      continue;
-    }
+    const list = byHub.get(state.tapoConnect) || [];
+    list.push({ did, state });
+    byHub.set(state.tapoConnect, list);
+  }
 
+  for (const [tapoConnect, devices] of byHub) {
     try {
-      const deviceList = await state.tapoConnect.getChildDeviceList(0);
-      const updated = TapoConnect.parseDevices(
-        deviceList,
-        state.tapoConnect,
-        null,
-      ).find((d) => d.uniqueId === state.device.uniqueId);
+      const all = new Map();
+      let index = 0;
+      let totalDevices = null;
 
-      if (updated) {
+      do {
+        const page = await tapoConnect.getChildDeviceList(index);
+        for (const d of TapoConnect.parseDevices(page, tapoConnect, null)) {
+          all.set(d.uniqueId, d);
+        }
+        if (totalDevices === null) {
+          totalDevices = page.sum;
+        }
+        index += 10;
+      } while (index < (totalDevices ?? 0));
+
+      for (const { did, state } of devices) {
+        if (
+          ignoreSensors &&
+          state.device.deviceType === "temperature_humidity_sensor"
+        ) {
+          continue;
+        }
+
+        const updated = all.get(state.device.uniqueId);
+        if (!updated) continue;
+
         state.device = updated;
 
         switch (updated.deviceType) {
@@ -236,7 +269,7 @@ async function pollHubDevices(cfg, api) {
             break;
           case "contact_sensor":
             api.updateDeviceState(did, {
-              contact: typeof updated.contactOpen === "boolean" ? updated.contactOpen : false,
+              contact: await resolveContactState(updated, state.tapoConnect),
               battery_low: updated.atLowBattery ?? false,
             });
             break;
@@ -255,7 +288,7 @@ async function pollHubDevices(cfg, api) {
         }
       }
     } catch (e) {
-      log("debug", `Poll error for hub device ${did}: ${e.message}`);
+      log("debug", `Poll error for hub: ${e.message}`);
     }
   }
 }
@@ -387,6 +420,11 @@ async function discoverCameras(cfg, api) {
   const seen = new Set();
 
   for (const camConfig of cameras) {
+    // Skip empty camera rows (left behind by the app config editor)
+    if (!camConfig?.name && !camConfig?.ipAddress) {
+      continue;
+    }
+
     const did = makeCameraId(camConfig);
     seen.add(did);
 
