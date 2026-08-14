@@ -98,6 +98,7 @@ async function discoverHubDevices(cfg, api) {
 
     if (!hubDevices.has(did)) {
       let type, capabilities, state;
+      let metadata = undefined;
 
       switch (device.deviceType) {
         case "temperature_humidity_sensor":
@@ -141,6 +142,41 @@ async function discoverHubDevices(cfg, api) {
             min_target_temp: device.minControlTemp ?? 5,
             max_target_temp: device.maxControlTemp ?? 30,
           };
+          metadata = {
+            ui: {
+              sections: [
+                {
+                  title: "Thermostat",
+                  rows: [
+                    {
+                      type: "stepper",
+                      key: "target_temp",
+                      label: "Target temperature",
+                      min_key: "min_target_temp",
+                      max_key: "max_target_temp",
+                      step: 1,
+                      unit: "celsius",
+                    },
+                    {
+                      type: "value",
+                      key: "temperature",
+                      label: "Current temperature",
+                      unit: "celsius",
+                    },
+                    {
+                      type: "segment",
+                      key: "heating_state",
+                      label: "Mode",
+                      options: [
+                        { value: 1, label: "On" },
+                        { value: 0, label: "Frost" },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          };
           break;
         case "contact_sensor":
           type = "sensor";
@@ -176,6 +212,7 @@ async function discoverHubDevices(cfg, api) {
         type,
         capabilities,
         state,
+        metadata,
       });
       log(
         "info",
@@ -540,12 +577,36 @@ async function discoverCameras(cfg, api) {
         }
 
         const finalType = isDoorbell ? "doorbell" : "camera";
+
+        const uiRows = [];
+        if (!camConfig.disablePrivacyToggle) {
+          uiRows.push({ type: "toggle", key: "privacy_mode", label: "Privacy mode" });
+        }
+        if (!camConfig.disableAlarmToggle) {
+          uiRows.push({ type: "toggle", key: "alarm", label: "Alarm" });
+        }
+        if (!camConfig.disableNotificationsToggle) {
+          uiRows.push({ type: "toggle", key: "notifications", label: "Notifications" });
+        }
+        if (!camConfig.disableMotionDetectionToggle) {
+          uiRows.push({ type: "toggle", key: "motion_detection", label: "Motion detection" });
+        }
+        if (!camConfig.disableLEDToggle) {
+          uiRows.push({ type: "toggle", key: "led", label: "Status LED" });
+        }
+        uiRows.push({ type: "button", key: "p2p_start", label: "Live view" });
+
         api.registerDevice({
           id: did,
           name: camConfig.name,
           type: finalType,
           capabilities,
           state,
+          metadata: {
+            ui: {
+              sections: [{ title: "Camera", rows: uiRows }],
+            },
+          },
         });
         log(
           "info",
