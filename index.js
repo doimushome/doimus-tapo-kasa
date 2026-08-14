@@ -559,6 +559,9 @@ async function discoverCameras(cfg, api) {
         capabilities.push("p2p_start");
         capabilities.push("p2p_stop");
 
+        // Camera present (drives camera UI in the app)
+        capabilities.push("video");
+
         // Doorbell support
         if (isDoorbell) {
           capabilities.push("doorbell");
