@@ -12,6 +12,10 @@ let cameraDevices = new Map();
 let hubPollTimer = null;
 let cameraPollTimers = new Map();
 let savedApi = null;
+// Hub re-login cooldown: hub IP → timestamp of last re-login attempt (ms).
+// Prevents hammering an unreachable/rejecting hub on every poll.
+let hubReconnectCooldowns = new Map();
+const HUB_RECONNECT_COOLDOWN_MS = 60 * 1000;
 // Live view: deviceId → ffmpeg child process
 let liveViewProcesses = new Map();
 // Snapshot cooldown: deviceId → last snapshot timestamp (ms)
@@ -212,20 +216,8 @@ async function pollHubDevices(cfg, api) {
 
   for (const [tapoConnect, devices] of byHub) {
     try {
-      const all = new Map();
-      let index = 0;
-      let totalDevices = null;
-
-      do {
-        const page = await tapoConnect.getChildDeviceList(index);
-        for (const d of TapoConnect.parseDevices(page, tapoConnect, null)) {
-          all.set(d.uniqueId, d);
-        }
-        if (totalDevices === null) {
-          totalDevices = page.sum;
-        }
-        index += 10;
-      } while (index < (totalDevices ?? 0));
+      const all = await fetchHubDeviceList(tapoConnect, devices, ignoreSensors, api);
+      if (!all) continue;
 
       for (const { did, state } of devices) {
         if (
@@ -288,9 +280,55 @@ async function pollHubDevices(cfg, api) {
         }
       }
     } catch (e) {
-      log("debug", `Poll error for hub: ${e.message}`);
+      log("error", `Poll error for hub: ${e.message}`);
     }
   }
+}
+
+// Fetches the child device list for a hub, re-logging in once if the session
+// has gone stale (TP-Link hub sessions expire and return 403 otherwise).
+// Returns a Map of uniqueId → device, or null if both attempts failed.
+async function fetchHubDeviceList(tapoConnect, devices, ignoreSensors, api) {
+  const hubIp = tapoConnect.deviceIp || "unknown";
+
+  try {
+    return await fetchHubDevicePage(tapoConnect);
+  } catch (firstErr) {
+    const now = Date.now();
+    const lastRetry = hubReconnectCooldowns.get(hubIp) || 0;
+    if (now - lastRetry < HUB_RECONNECT_COOLDOWN_MS) {
+      log("debug", `Hub ${hubIp} poll failed (${firstErr.message}); re-login on cooldown, skipping`);
+      return null;
+    }
+    hubReconnectCooldowns.set(hubIp, now);
+    log("warn", `Hub ${hubIp} poll failed (${firstErr.message}) — re-logging in and retrying`);
+    try {
+      await tapoConnect.login();
+      return await fetchHubDevicePage(tapoConnect);
+    } catch (retryErr) {
+      log("error", `Hub ${hubIp} re-login + retry failed: ${retryErr.message}`);
+      return null;
+    }
+  }
+}
+
+async function fetchHubDevicePage(tapoConnect) {
+  const all = new Map();
+  let index = 0;
+  let totalDevices = null;
+
+  do {
+    const page = await tapoConnect.getChildDeviceList(index);
+    for (const d of TapoConnect.parseDevices(page, tapoConnect, null)) {
+      all.set(d.uniqueId, d);
+    }
+    if (totalDevices === null) {
+      totalDevices = page.sum;
+    }
+    index += 10;
+  } while (index < (totalDevices ?? 0));
+
+  return all;
 }
 
 // ── Snapshot capture + dual-store (MJPEG + Image history) ──────────────
@@ -746,6 +784,7 @@ module.exports = {
     }
     doorbellTimers.clear();
     snapshotCooldowns.clear();
+    hubReconnectCooldowns.clear();
 
     hubDevices.clear();
     cameraDevices.clear();
