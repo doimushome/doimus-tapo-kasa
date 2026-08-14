@@ -23,19 +23,97 @@ let snapshotCooldowns = new Map();
 // Doorbell auto-reset: deviceId → timeout handle
 let doorbellTimers = new Map();
 
-async function resolveContactState(device, tapoConnect) {
+// Trigger-log response shapes vary across hub firmware generations. Try the
+// common control_child envelope first, then a few direct-response forms.
+function extractTriggerLogs(response) {
+  const r = response?.responseData?.result?.responses?.[0]?.result;
+  if (Array.isArray(r?.logs)) return r.logs;
+  if (Array.isArray(response?.logs)) return response.logs;
+  if (Array.isArray(response?.trigger_log)) return response.trigger_log;
+  return null;
+}
+
+// Maps a trigger-log event to a contact state. Returns undefined for events
+// that do not express a contact change.
+function eventToContactState(event) {
+  if (event === "open" || event === "1") return true;
+  if (event === "close" || event === "0") return false;
+  if (event === "keepOpen") return true; // emitted when the sensor stays open >1min
+  return undefined;
+}
+
+// Logged once per sensor so the response shape is visible at debug level.
+const loggedTriggerShapes = new Set();
+
+async function readTriggerLogs(device, tapoConnect) {
+  try {
+    const response = await tapoConnect.getChildTriggerLogs(device.uniqueId);
+    const logs = extractTriggerLogs(response);
+    if (!logs?.length) return null;
+    if (!loggedTriggerShapes.has(device.uniqueId)) {
+      loggedTriggerShapes.add(device.uniqueId);
+      log(
+        "debug",
+        `Trigger log shape for ${device.name}: ${JSON.stringify(response).slice(0, 400)}`,
+      );
+    }
+    return logs;
+  } catch (e) {
+    log("debug", `Trigger log fetch failed for ${device.name}: ${e.message}`);
+    return null;
+  }
+}
+
+async function resolveContactState(device, tapoConnect, logs) {
   // The `open` field in get_child_device_list can lag for battery sensors;
   // the last trigger event is the authoritative current state.
-  try {
-    const tl = await tapoConnect.getChildTriggerLogs(device.uniqueId);
-    const evt =
-      tl?.responseData?.result?.responses?.[0]?.result?.logs?.[0]?.event;
-    if (evt === "open") return true;
-    if (evt === "close") return false;
-  } catch (_) {
-    // fall through to the cached open field
-  }
+  if (logs === undefined) logs = await readTriggerLogs(device, tapoConnect);
+  const current = eventToContactState(logs?.[0]?.event);
+  if (current !== undefined) return current;
   return typeof device.contactOpen === "boolean" ? device.contactOpen : false;
+}
+
+// Replays newly seen open/close events as individual state updates so every
+// transition (even ones that revert between polls) lands in the timeline.
+async function updateContactSensorState(did, device, state, api) {
+  const battery = device.atLowBattery ?? false;
+  const logs = await readTriggerLogs(device, state.tapoConnect);
+
+  if (logs?.length) {
+    const lastId = state.triggerLogId || 0;
+    let newestId = lastId;
+    const fresh = [];
+    for (const entry of logs) {
+      const id = Number(entry?.id);
+      if (Number.isFinite(id) && id > lastId) {
+        fresh.push(entry);
+        if (id > newestId) newestId = id;
+      }
+    }
+    fresh.sort((a, b) => Number(a.id) - Number(b.id));
+
+    for (const entry of fresh) {
+      const next = eventToContactState(entry.event);
+      if (next !== undefined) {
+        api.updateDeviceState(did, { contact: next, battery_low: battery });
+      }
+    }
+    if (newestId > lastId) state.triggerLogId = newestId;
+
+    // The newest log event always reflects the current state; push it so the
+    // value stays accurate even when no new events arrived this poll.
+    const current = eventToContactState(logs[0].event);
+    if (current !== undefined) {
+      api.updateDeviceState(did, { contact: current, battery_low: battery });
+      return;
+    }
+  }
+
+  // No readable trigger logs — fall back to the (possibly lagging) open field.
+  api.updateDeviceState(did, {
+    contact: await resolveContactState(device, state.tapoConnect, logs),
+    battery_low: battery,
+  });
 }
 
 async function discoverHubDevices(cfg, api) {
@@ -98,6 +176,7 @@ async function discoverHubDevices(cfg, api) {
 
     if (!hubDevices.has(did)) {
       let type, capabilities, state;
+      let triggerLogId = 0;
       let metadata = undefined;
 
       switch (device.deviceType) {
@@ -181,10 +260,18 @@ async function discoverHubDevices(cfg, api) {
         case "contact_sensor":
           type = "sensor";
           capabilities = ["contact", "battery_low"];
+          const contactLogs = await readTriggerLogs(device, device.tapoConnect);
           state = {
-            contact: await resolveContactState(device, device.tapoConnect),
+            contact: await resolveContactState(
+              device,
+              device.tapoConnect,
+              contactLogs,
+            ),
             battery_low: device.atLowBattery ?? false,
           };
+          triggerLogId = contactLogs?.length
+            ? Number(contactLogs[0].id) || 0
+            : 0;
           break;
         case "leak_sensor":
           type = "sensor";
@@ -218,7 +305,11 @@ async function discoverHubDevices(cfg, api) {
         "info",
         `Registered hub ${type}: ${device.name} (${device.model})`,
       );
-      hubDevices.set(did, { device, tapoConnect: device.tapoConnect });
+      hubDevices.set(did, {
+        device,
+        tapoConnect: device.tapoConnect,
+        triggerLogId,
+      });
     } else {
       hubDevices.get(did).device = device;
     }
@@ -297,10 +388,7 @@ async function pollHubDevices(cfg, api) {
             });
             break;
           case "contact_sensor":
-            api.updateDeviceState(did, {
-              contact: await resolveContactState(updated, state.tapoConnect),
-              battery_low: updated.atLowBattery ?? false,
-            });
+            await updateContactSensorState(did, updated, state, api);
             break;
           case "leak_sensor":
             api.updateDeviceState(did, {
@@ -849,6 +937,7 @@ module.exports = {
     doorbellTimers.clear();
     snapshotCooldowns.clear();
     hubReconnectCooldowns.clear();
+    loggedTriggerShapes.clear();
 
     hubDevices.clear();
     cameraDevices.clear();

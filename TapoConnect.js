@@ -440,7 +440,12 @@ class TapoConnect {
         minControlTemp: device.min_control_temp,
         maxControlTemp: device.max_control_temp,
         atLowBattery: device.at_low_battery,
-        contactOpen: typeof device.open === "boolean" ? device.open : undefined,
+        contactOpen: (() => {
+          if (typeof device.open === "boolean") return device.open;
+          if (device.open === 1 || device.open === "1") return true;
+          if (device.open === 0 || device.open === "0") return false;
+          return undefined;
+        })(),
         leakDetected: (() => {
           if (typeof device.water_leak_status === "string") {
             return device.water_leak_status.toLowerCase() === "water_leak";
