@@ -1,5 +1,8 @@
 const { TapoConnect } = require("./TapoConnect");
 const { TapoCameraClient } = require("./TapoCamera");
+const { TapoCloudClient } = require("./TapoCloudClient");
+const { TapoStreamClient } = require("./TapoStreamClient");
+const { discoverDevices, detectSubnet } = require("./TapoDiscovery");
 
 function createLogger(api, prefix) {
   return (level, msg) => api.log(level, `[${prefix}] ${msg}`);
@@ -11,6 +14,7 @@ let hubDevices = new Map();
 let cameraDevices = new Map();
 let hubPollTimer = null;
 let cameraPollTimers = new Map();
+let cameraDiscoveryTimer = null;
 let savedApi = null;
 // Hub re-login cooldown: hub IP → timestamp of last re-login attempt (ms).
 // Prevents hammering an unreachable/rejecting hub on every poll.
@@ -472,13 +476,84 @@ async function captureAndStoreSnapshot(did, camConfig, client, api) {
   }
 }
 
-// ── RTSP → MJPEG relay for live view (p2p_start / p2p_stop) ───────────
-async function startLiveView(did, camConfig, api) {
+// ── Live view relay (p2p_start / p2p_stop) ─────────────────────────────
+// Two transports:
+//   RTSP  — `rtsp://ip:554/stream1` → ffmpeg → MJPEG (mains cameras)
+//   P2P   — proprietary TCP/8800 media protocol → ffmpeg → MJPEG (all
+//           cameras, required for battery/doorbell models without RTSP)
+function shouldUseP2P(camConfig) {
+  if (camConfig.streamMode === "rtsp") return false;
+  if (camConfig.streamMode === "p2p") return true;
+  if (camConfig.batteryPowered) return true;
+  // auto: default to RTSP only when RTSP credentials are configured
+  return !camConfig.streamUser || !camConfig.streamPassword;
+}
+
+async function startLiveView(did, camState, api) {
   if (liveViewProcesses.has(did)) {
-    log("debug", `Live view already active for ${camConfig.name}`);
+    log("debug", `Live view already active for ${camState.config.name}`);
     return;
   }
 
+  if (shouldUseP2P(camState.config)) {
+    await startP2pLiveView(did, camState, api);
+  } else {
+    await startRtspLiveView(did, camState.config, api);
+  }
+}
+
+// MPEG-TS byte-alignment: the camera's multipart bodies aren't aligned to
+// 188-byte TS packets (each part may start/end mid-packet). ffmpeg's demuxer
+// needs aligned packets, so sync on the 0x47 sync byte and emit only complete
+// 188-byte packets — same as pytapo's streamer does.
+function createTsAligner(emit) {
+  let buffer = Buffer.alloc(0);
+  return (chunk) => {
+    buffer = Buffer.concat([buffer, chunk]);
+    while (buffer.length >= 188 && buffer[0] !== 0x47) {
+      const idx = buffer.indexOf(0x47, 1);
+      if (idx === -1) {
+        buffer = Buffer.alloc(0);
+        return;
+      }
+      buffer = buffer.subarray(idx);
+    }
+    while (buffer.length >= 188) {
+      emit(buffer.subarray(0, 188));
+      buffer = buffer.subarray(188);
+    }
+  };
+}
+
+function makeMpegFrameHandler(did, name, api) {
+  let buffer = Buffer.alloc(0);
+  const SOI = Buffer.from([0xff, 0xd8]);
+  const EOI = Buffer.from([0xff, 0xd9]);
+  return (chunk) => {
+    buffer = Buffer.concat([buffer, chunk]);
+
+    // Extract complete JPEG frames from the MJPEG pipe stream
+    while (true) {
+      const soiIdx = buffer.indexOf(SOI);
+      if (soiIdx === -1) break;
+
+      const eoiIdx = buffer.indexOf(EOI, soiIdx + 2);
+      if (eoiIdx === -1) break;
+
+      const jpeg = buffer.subarray(soiIdx, eoiIdx + 2);
+      buffer = buffer.subarray(eoiIdx + 2);
+
+      if (jpeg.length > 0) {
+        api.sendMjpegFrame(did, "main", jpeg);
+        api.updateDeviceImage(did, "snapshot_latest", jpeg, "image/jpeg");
+        // LiveViewSheet requests `snapshot_live` for the full-screen view.
+        api.updateDeviceImage(did, "snapshot_live", jpeg, "image/jpeg");
+      }
+    }
+  };
+}
+
+async function startRtspLiveView(did, camConfig, api) {
   const rtspUrl = `rtsp://${camConfig.streamUser}:${camConfig.streamPassword}@${camConfig.ipAddress}:554/stream1`;
 
   log("info", `Starting live view for ${camConfig.name} via ${rtspUrl}`);
@@ -505,34 +580,10 @@ async function startLiveView(did, camConfig, api) {
       { stdio: ["ignore", "pipe", "pipe"] },
     );
 
-    let buffer = Buffer.alloc(0);
-    const SOI = Buffer.from([0xff, 0xd8]);
-    const EOI = Buffer.from([0xff, 0xd9]);
-
     proc.stderr.on("data", (data) => {
       log("debug", "ffmpeg: " + data.toString());
     });
-
-    proc.stdout.on("data", (chunk) => {
-      buffer = Buffer.concat([buffer, chunk]);
-
-      // Extract complete JPEG frames from the MJPEG pipe stream
-      while (true) {
-        const soiIdx = buffer.indexOf(SOI);
-        if (soiIdx === -1) break;
-
-        const eoiIdx = buffer.indexOf(EOI, soiIdx + 2);
-        if (eoiIdx === -1) break;
-
-        const jpeg = buffer.subarray(soiIdx, eoiIdx + 2);
-        buffer = buffer.subarray(eoiIdx + 2);
-
-        if (jpeg.length > 0) {
-          api.sendMjpegFrame(did, "main", jpeg);
-          api.updateDeviceImage(did, "snapshot_latest", jpeg, "image/jpeg");
-        }
-      }
-    });
+    proc.stdout.on("data", makeMpegFrameHandler(did, camConfig.name, api));
 
     proc.on("error", (err) => {
       log(
@@ -547,7 +598,13 @@ async function startLiveView(did, camConfig, api) {
       liveViewProcesses.delete(did);
     });
 
-    liveViewProcesses.set(did, proc);
+    liveViewProcesses.set(did, {
+      stop: () => {
+        try {
+          proc.kill("SIGTERM");
+        } catch (_) {}
+      },
+    });
   } catch (e) {
     log(
       "error",
@@ -556,12 +613,129 @@ async function startLiveView(did, camConfig, api) {
   }
 }
 
+// Proprietary TCP/8800 media protocol: digest-auth the camera, pull MPEG-TS,
+// feed ffmpeg stdin, relay MJPEG frames to the app.
+async function startP2pLiveView(did, camState, api) {
+  const camConfig = camState.config;
+  const { spawn } = require("child_process");
+
+  log(
+    "info",
+    `Starting live view for ${camConfig.name} via P2P (${camConfig.ipAddress}:8800)`,
+  );
+
+  const ffmpeg = spawn(
+    "ffmpeg",
+    [
+      "-loglevel",
+      "error",
+      "-fflags",
+      "nobuffer",
+      "-probesize",
+      "65536",
+      "-analyzeduration",
+      "500000",
+      "-f",
+      "mpegts",
+      "-i",
+      "pipe:0",
+      "-vcodec",
+      "mjpeg",
+      "-q:v",
+      "10",
+      "-r",
+      "5",
+      "-vf",
+      "scale=640:-1",
+      "-f",
+      "mjpeg",
+      "pipe:1",
+    ],
+    { stdio: ["pipe", "pipe", "pipe"] },
+  );
+
+  ffmpeg.stderr.on("data", (data) => {
+    log("debug", "ffmpeg: " + data.toString());
+  });
+  ffmpeg.stdout.on("data", makeMpegFrameHandler(did, camConfig.name, api));
+
+  const client = new TapoStreamClient(
+    (level, msg) => log(level, msg),
+    {
+      ip: camConfig.ipAddress,
+      cloudPassword: camConfig.password,
+      username: camConfig.username || "admin",
+      deviceId: camConfig.deviceId || null,
+      quality: camConfig.streamQuality || "HD",
+    },
+  );
+
+  let streamError = null;
+  const alignTs = createTsAligner((ts) => {
+    if (streamError || !ffmpeg.stdin || ffmpeg.stdin.destroyed) return;
+    ffmpeg.stdin.write(ts);
+  });
+  client.on("data", alignTs);
+  client.on("error", (err) => {
+    streamError = err;
+    log("error", `P2P stream error for ${camConfig.name}: ${err.message}`);
+  });
+  client.on("close", () => {
+    log("debug", `P2P stream closed for ${camConfig.name}`);
+  });
+
+  ffmpeg.on("error", (err) => {
+    log("error", `Live view ffmpeg error for ${camConfig.name}: ${err.message}`);
+    liveViewProcesses.delete(did);
+  });
+  ffmpeg.on("close", () => {
+    log("info", `Live view stopped for ${camConfig.name}`);
+    liveViewProcesses.delete(did);
+  });
+
+  liveViewProcesses.set(did, {
+    stop: () => {
+      client.close();
+      try {
+        ffmpeg.kill("SIGTERM");
+      } catch (_) {}
+    },
+  });
+
+  // Battery cameras wake slowly; retry the 8800 connect a few times.
+  const maxAttempts = camConfig.batteryPowered ? 4 : 1;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await client.connect();
+      log("info", `P2P stream connected for ${camConfig.name}`);
+      return;
+    } catch (err) {
+      log(
+        "warn",
+        `P2P connect attempt ${attempt}/${maxAttempts} failed for ${camConfig.name}: ${err.message}`,
+      );
+      if (attempt < maxAttempts) {
+        await new Promise((r) => setTimeout(r, 3000));
+      }
+    }
+  }
+  log(
+    "error",
+    `Giving up on P2P stream for ${camConfig.name} — is the camera awake?`,
+  );
+  client.close();
+  try {
+    ffmpeg.kill("SIGTERM");
+  } catch (_) {}
+  liveViewProcesses.delete(did);
+}
+
 function stopLiveView(did, api) {
-  const proc = liveViewProcesses.get(did);
-  if (!proc) return;
+  const handle = liveViewProcesses.get(did);
+  if (!handle) return;
   log("info", `Stopping live view for ${did}`);
   try {
-    proc.kill("SIGTERM");
+    handle.stop();
   } catch (_) {}
   liveViewProcesses.delete(did);
 }
@@ -571,10 +745,118 @@ function makeCameraId(camConfig) {
   const crypto = require("crypto");
   const hash = crypto
     .createHash("sha256")
-    .update(JSON.stringify({ name: camConfig.name, user: camConfig.streamUser }))
+    .update(
+      JSON.stringify({
+        name: camConfig.name,
+        user: camConfig.streamUser,
+        deviceId: camConfig.deviceId,
+        mac: camConfig.mac,
+      }),
+    )
     .digest("hex")
     .slice(0, 16);
   return `camera-${hash}`;
+}
+
+// Doorbell/battery model prefixes: no RTSP/ONVIF, must stream over the
+// proprietary TCP/8800 media protocol.
+const BATTERY_CAMERA_MODEL = /^(c420|c425|c402|c403|c410|c700|c710|c720|d230|d235|d210|d130)/i;
+
+function isBatteryCameraModel(model) {
+  return BATTERY_CAMERA_MODEL.test(model || "");
+}
+
+function isDoorbellModel(model) {
+  return /^(d230|d235|d210|d130)/i.test(model || "");
+}
+
+// Cloud device list → camera configs, resolving LAN IPs via TDP discovery
+// (matched by MAC, same as the official app). Returns
+//   { configs: Map key → config, deviceIds: Set }
+// `deviceIds` lists every camera in the account so asleep/battery cameras
+// that aren't on the LAN right now can be retained by the caller.
+async function discoverCamerasFromCloud(cfg) {
+  const hubsConfig = cfg.hubs;
+  if (!hubsConfig?.email || !hubsConfig?.password) {
+    log("debug", "No cloud credentials, skipping camera cloud discovery");
+    return { configs: new Map(), deviceIds: new Set() };
+  }
+
+  const cloud = new TapoCloudClient(
+    (level, msg) => log(level, msg),
+    hubsConfig.email,
+    hubsConfig.password,
+  );
+
+  let list;
+  try {
+    list = await cloud.getDeviceList();
+  } catch (e) {
+    log("error", `Camera cloud discovery failed: ${e.message}`);
+    return { configs: new Map(), deviceIds: new Set() };
+  }
+
+  const cloudCameras = list.filter((d) => {
+    const type = String(d.deviceType || "").toUpperCase();
+    return (
+      type.includes("TAPOCAMERA") ||
+      type.includes("IPCAMERA") ||
+      isDoorbellModel(d.deviceModel)
+    );
+  });
+  const deviceIds = new Set(
+    cloudCameras.map((d) => d.deviceId).filter(Boolean),
+  );
+  if (!cloudCameras.length) return { configs: new Map(), deviceIds };
+
+  log("debug", `Cloud lists ${cloudCameras.length} camera device(s), probing LAN…`);
+  // Determine the LAN subnet: explicit config wins; otherwise auto-detect
+  // from the route table (works on the Pi with host networking). Broadcast
+  // is used when no subnet can be determined.
+  const subnet =
+    cfg.cloud?.subnet ||
+    detectSubnet() ||
+    null;
+  const tdpDevices = await discoverDevices(
+    (level, msg) => log(level, msg),
+    cfg.cloud?.discoveryTimeout || 4000,
+    subnet,
+  );
+  const byMac = new Map(
+    tdpDevices.map((d) => [d.mac.replace(/[:-]/g, "").toLowerCase(), d]),
+  );
+
+  const configs = new Map();
+  for (const dev of cloudCameras) {
+    const mac = (dev.deviceMac || dev.mac || "")
+      .replace(/[:-]/g, "")
+      .toLowerCase();
+    const tdp = mac ? byMac.get(mac) : null;
+    if (!tdp) {
+      log(
+        "debug",
+        `No LAN device found for ${dev.deviceName} (mac ${mac || "?"}); camera asleep or on another VLAN`,
+      );
+      continue;
+    }
+
+    const model = dev.deviceModel || tdp.deviceModel || "";
+    const config = {
+      name: dev.deviceName || dev.alias || tdp.deviceName || model,
+      ipAddress: tdp.ip,
+      deviceId: dev.deviceId || tdp.deviceId,
+      mac,
+      username: "admin",
+      password: hubsConfig.password,
+      batteryPowered: isBatteryCameraModel(model),
+      streamMode: "p2p",
+      fromCloud: true,
+      deviceModel: model,
+    };
+    configs.set(config.deviceId || config.mac, config);
+  }
+  log("info", `Cloud discovery resolved ${configs.size} camera(s) on the LAN`);
+  return { configs, deviceIds };
 }
 
 async function discoverCameras(cfg, api) {
@@ -582,7 +864,37 @@ async function discoverCameras(cfg, api) {
 
   const seen = new Set();
 
-  for (const camConfig of cameras) {
+  // Merge manually configured cameras with cloud-discovered ones. Manual
+  // configs win when they match a cloud device by MAC or name. Registered
+  // cloud cameras that are still in the account but asleep/off-LAN right now
+  // are retained with their last known config instead of being dropped.
+  const { configs: cloudConfigs, deviceIds: cloudDeviceIds } =
+    cfg.cloud?.discoverCameras === false
+      ? { configs: new Map(), deviceIds: new Set() }
+      : await discoverCamerasFromCloud(cfg);
+
+  const merged = new Map();
+  for (const [, cc] of cloudConfigs) {
+    merged.set(cc.mac, cc);
+  }
+  for (const [did, state] of cameraDevices) {
+    const cfgEntry = state.config;
+    if (
+      cfgEntry?.fromCloud &&
+      cfgEntry.deviceId &&
+      cloudDeviceIds.has(cfgEntry.deviceId) &&
+      !merged.has(cfgEntry.mac)
+    ) {
+      merged.set(cfgEntry.mac, cfgEntry);
+    }
+  }
+  for (const manual of cameras) {
+    if (!manual?.name && !manual?.ipAddress) continue;
+    const key = manual.mac || (manual.ipAddress && manual.name);
+    merged.set(key || `manual-${manual.name}`, manual);
+  }
+
+  for (const camConfig of merged.values()) {
     // Skip empty camera rows (left behind by the app config editor)
     if (!camConfig?.name && !camConfig?.ipAddress) {
       continue;
@@ -879,14 +1191,14 @@ module.exports = {
           }
           // ── Live view commands (p2p_start / p2p_stop) ──────────
           else if (key === "p2p_start") {
-            startLiveView(deviceId, camState.config, api);
+            startLiveView(deviceId, camState, api);
           } else if (key === "p2p_stop") {
             stopLiveView(deviceId, api);
           }
           // ── WebRTC signaling relay from mobile app ─────────────
           else if (key === "webrtc" && value && typeof value === "object") {
             if (value.action === "start") {
-              startLiveView(deviceId, camState.config, api);
+              startLiveView(deviceId, camState, api);
             } else if (value.action === "stop") {
               stopLiveView(deviceId, api);
             }
@@ -916,11 +1228,29 @@ module.exports = {
       pollInterval,
     );
     if (hubPollTimer.unref) hubPollTimer.unref();
+
+    // Periodic camera re-discovery: sleeping battery cameras and cameras
+    // that failed to register at startup get retried, and newly added
+    // cameras are picked up without a plugin restart.
+    const discoveryInterval = (cfg.cloud?.discoveryInterval ?? 300000);
+    if (discoveryInterval > 0) {
+      cameraDiscoveryTimer = setInterval(
+        () =>
+          discoverCameras(cfg, api).catch((e) =>
+            log("error", `Camera re-discovery error: ${e.message}`),
+          ),
+        discoveryInterval,
+      );
+      if (cameraDiscoveryTimer.unref) cameraDiscoveryTimer.unref();
+    }
   },
 
   stop() {
     if (hubPollTimer) clearInterval(hubPollTimer);
     hubPollTimer = null;
+
+    if (cameraDiscoveryTimer) clearInterval(cameraDiscoveryTimer);
+    cameraDiscoveryTimer = null;
 
     for (const [, timer] of cameraPollTimers) {
       clearInterval(timer);

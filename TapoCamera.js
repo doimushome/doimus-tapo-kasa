@@ -164,7 +164,13 @@ class TapoCameraClient {
     const https = require("https");
     const agent = new https.Agent({
       rejectUnauthorized: false,
-      ciphers: "AES256-SHA:AES128-GCM-SHA256",
+      // Old Tapo cameras need TLSv1-era CBC ciphers; newer ones negotiate
+      // modern suites. List the old ones first, keep the rest available.
+      ciphers:
+        "AES256-SHA:AES128-SHA:AES128-GCM-SHA256:AES256-GCM-SHA384:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384",
+      secureOptions:
+        require("constants").SSL_OP_ALL |
+        require("constants").SSL_OP_NO_SSLv3,
     });
 
     return axios({
@@ -176,7 +182,9 @@ class TapoCameraClient {
         ...(data.headers || {}),
       },
       httpsAgent: agent,
-      timeout: 5000,
+      // Generous timeout: battery cameras wake slowly and may take >5s to
+      // answer the HTTPS control API right after a TDP discovery probe.
+      timeout: 15000,
     });
   }
 
@@ -404,23 +412,13 @@ class TapoCameraClient {
   }
 
   decryptResponse(response) {
+    // Node's decipher strips PKCS7 padding automatically on final(); the
+    // legacy manual unpadding below it used to throw "Invalid padding" on
+    // already-unpadded output. Rely on Node's default unpadding instead.
     const decipher = crypto.createDecipheriv("aes-128-cbc", this.lsk, this.ivb);
     let decrypted = decipher.update(response, "base64", "utf8");
     decrypted += decipher.final("utf8");
-
-    const paddingLength = decrypted.charCodeAt(decrypted.length - 1);
-    if (
-      paddingLength > this.AES_BLOCK_SIZE ||
-      paddingLength > decrypted.length
-    ) {
-      throw new Error("Invalid padding");
-    }
-    for (let i = decrypted.length - paddingLength; i < decrypted.length; i++) {
-      if (decrypted.charCodeAt(i) !== paddingLength) {
-        throw new Error("Invalid padding");
-      }
-    }
-    return decrypted.slice(0, decrypted.length - paddingLength);
+    return decrypted;
   }
 
   getTapoTag(request) {

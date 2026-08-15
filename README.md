@@ -15,13 +15,14 @@ Doimus native plugin for TP-Link Tapo/Kasa devices. Supports both Kasa/Tapo smar
 
 ### Tapo WiFi Cameras & Doorbells
 
+- **Cloud + LAN discovery** — cameras are auto-listed from your Tapo account and matched to LAN devices (TDP discovery), so they appear without manual IP configuration
 - Privacy mode toggle (lens mask)
 - Alarm sound toggle
 - Notifications toggle
 - Motion detection toggle
 - LED indicator toggle
-- Motion detection via ONVIF
-- **Live view** via RTSP → MJPEG relay (requires ffmpeg on the host)
+- Motion detection via ONVIF (mains cameras)
+- **Live view** for all cameras via the proprietary TP-Link media protocol (TCP/8800), plus RTSP → MJPEG relay where RTSP is available
 - **Battery level reporting** for battery-powered cameras (C420, C425, D230, etc.)
 - **Doorbell** detection and doorbell press events (D230, D235, D210, D130)
 - **Event-driven snapshots** — capture on ONVIF motion events instead of constant polling (battery-friendly)
@@ -33,15 +34,22 @@ Doimus native plugin for TP-Link Tapo/Kasa devices. Supports both Kasa/Tapo smar
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `hubs.email` | string | — | Your Tapo/Kasa account email |
+| `hubs.email` | string | — | Your Tapo/Kasa account email. Also used for camera cloud discovery + P2P streaming |
 | `hubs.password` | string | — | Your Tapo/Kasa account password |
 | `hubs.devices` | array | — | IP addresses of your hubs |
 | `hubs.ignoreSensors` | boolean | `false` | Ignore temperature/humidity sensors |
 | `hubs.pollInterval` | integer | `60` | Polling interval in seconds (5-3600) |
 
+### Camera Cloud Discovery
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `cloud.discoverCameras` | boolean | `true` | Auto-list cameras from your Tapo account and register the ones found on the LAN |
+| `cloud.discoveryTimeout` | integer | `4000` | LAN probe timeout in ms for TDP discovery |
+
 ### Camera Configuration
 
-Each camera in the `cameras` array:
+Each camera in the `cameras` array (optional — cameras can be fully auto-discovered):
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -49,8 +57,11 @@ Each camera in the `cameras` array:
 | `ipAddress` | string | — | Camera IP address |
 | `username` | string | `admin` | Camera username |
 | `password` | string | — | Tapo account password |
-| `streamUser` | string | — | RTSP stream username (from Camera Account settings) |
-| `streamPassword` | string | — | RTSP stream password (from Camera Account settings) |
+| `streamUser` | string | — | RTSP stream username (from Camera Account settings); only needed for RTSP streaming |
+| `streamPassword` | string | — | RTSP stream password; only needed for RTSP streaming |
+| `streamMode` | string | `auto` | `auto` / `rtsp` / `p2p` — P2P uses the proprietary TCP/8800 protocol (required for battery/doorbell cameras) |
+| `streamQuality` | string | `HD` | P2P stream resolution: `HD` or `VGA` |
+| `deviceId` | string | — | Tapo deviceId (for cameras streamed through a hub); set automatically by cloud discovery |
 | `batteryPowered` | boolean | `false` | Enable for battery-powered cameras (C420, C425, D230, D235) |
 | `disableBatteryReporting` | boolean | `false` | Skip battery status queries |
 | `pullInterval` | integer | `60000` | Status polling interval in ms |
@@ -106,16 +117,22 @@ Tapo doorbell cameras (D230, D235, D210, D130) are auto-detected by model prefix
 
 ## Live View
 
-The plugin supports live view via RTSP → MJPEG relay. When enabled, the mobile app can start/stop live streaming:
+The plugin supports live view via two transports:
 
-- **Start**: Mobile sends `p2p_start` command → plugin spawns ffmpeg to pull RTSP stream and push MJPEG frames
-- **Stop**: Mobile sends `p2p_stop` command → plugin kills ffmpeg
+- **P2P (default, all cameras)** — the proprietary TP-Link media protocol on TCP/8800 (the same one the official Tapo app uses). Works for mains cameras, battery cameras and doorbells, even without RTSP/ONVIF. The plugin pulls MPEG-TS from the camera and relays MJPEG frames to the app.
+- **RTSP (when credentials are set)** — `rtsp://ip:554/stream1` → MJPEG relay via ffmpeg.
+
+**Start**: Mobile sends `p2p_start` command → plugin starts the relay. **Stop**: Mobile sends `p2p_stop` → plugin kills ffmpeg.
 
 **Requirements**: `ffmpeg` must be installed on the host running Doimus. On Orange Pi / Raspberry Pi: `sudo apt install ffmpeg`.
 
 The stream is bandwidth-optimized: 5 fps at 640px width with quality level 10.
 
+Battery cameras sleep between events; the plugin retries the P2P connection for a few seconds while the camera wakes up. If a camera is in deep sleep (no recent motion), no local mechanism can wake it on demand.
+
 ## Camera Setup
+
+Cameras can be **auto-discovered** (cloud list + LAN probe) using your `hubs.email` / `hubs.password` — no manual config needed. For manual/RTSP setups, continue as follows.
 
 For firmware build 230921 and higher, enable third-party compatibility:
 
@@ -125,7 +142,7 @@ For firmware build 230921 and higher, enable third-party compatibility:
 4. Go to "Third-Party Compatibility"
 5. Set to "On"
 
-To find RTSP credentials:
+To find RTSP credentials (only needed for RTSP streaming):
 - Tapo app > Settings > Advanced Settings > Camera Account
 - Username must be alphanumeric only (no special characters)
 
