@@ -89,7 +89,7 @@ function broadcastDiscover(log, timeoutMs) {
     });
 
     socket.on("message", (msg, rinfo) => {
-      const d = parseResponse(msg, rinfo, devices, log);
+      const d = parseResponse(msg, devices, log);
       if (d) devices.set(d.mac, d);
     });
 
@@ -139,7 +139,7 @@ function sweepDiscover(log, subnet, timeoutMs) {
     });
 
     socket.on("message", (msg, rinfo) => {
-      const d = parseResponse(msg, rinfo, devices, log);
+      const d = parseResponse(msg, devices, log);
       if (d) devices.set(d.mac, d);
     });
 
@@ -165,7 +165,7 @@ function sweepDiscover(log, subnet, timeoutMs) {
   });
 }
 
-function parseResponse(msg, rinfo, devices, log) {
+function parseResponse(msg, devices, log) {
   if (msg.length <= TDP_HEADER_SIZE) return null;
   let json;
   try {

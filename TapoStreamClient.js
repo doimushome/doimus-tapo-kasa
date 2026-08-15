@@ -73,8 +73,7 @@ function hkdf(ikm, salt, info, len) {
 
 // Tapo proprietary media-stream protocol on TCP/8800.
 // `POST /stream` with Digest auth, AES-128-CBC-encrypted multipart MPEG-TS
-// frames. Reverse-engineered by the community (pytapo / go2rtc); verified
-// against the official Tapo app (see REVERSE-ENGINEERING.md).
+// frames. Reverse-engineered from the official Tapo app (pytapo / go2rtc).
 class TapoStreamClient extends EventEmitter {
   constructor(log, options) {
     super();
@@ -151,15 +150,20 @@ class TapoStreamClient extends EventEmitter {
     return req + "\r\n";
   }
 
-  _sendStreamRequest(headers) {
-    const h = headers || {
+  _streamHeaders(authorization) {
+    const headers = {
       "Content-Type": "multipart/mixed;boundary=--client-stream-boundary--",
       "User-Agent": "Tapo CameraClient Android",
       Connection: "keep-alive",
       "Content-Length": "0",
       "X-Key-Exchange": "1",
     };
-    return this._write(this._buildRequest(h));
+    if (authorization) headers.Authorization = authorization;
+    return headers;
+  }
+
+  _sendStreamRequest(authorization) {
+    return this._write(this._buildRequest(this._streamHeaders(authorization)));
   }
 
   _write(data) {
@@ -235,14 +239,7 @@ class TapoStreamClient extends EventEmitter {
       if (opaque) authHeader += `,opaque="${opaque}"`;
 
       this._handshakeStage = 1;
-      await this._sendStreamRequest({
-        "Content-Type": "multipart/mixed;boundary=--client-stream-boundary--",
-        "User-Agent": "Tapo CameraClient Android",
-        Connection: "keep-alive",
-        "Content-Length": "0",
-        "X-Key-Exchange": "1",
-        Authorization: authHeader,
-      });
+      await this._sendStreamRequest(authHeader);
       return; // wait for the 200 response
     }
 

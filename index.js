@@ -1,3 +1,4 @@
+const crypto = require("crypto");
 const { TapoConnect } = require("./TapoConnect");
 const { TapoCameraClient } = require("./TapoCamera");
 const { TapoCloudClient } = require("./TapoCloudClient");
@@ -461,7 +462,7 @@ async function fetchHubDevicePage(tapoConnect) {
 }
 
 // ── Snapshot capture + dual-store (MJPEG + Image history) ──────────────
-async function captureAndStoreSnapshot(did, camConfig, client, api) {
+async function captureAndStoreSnapshot(did, client, api) {
   try {
     const frame = await client.getSnapshot();
     if (!frame || frame.length === 0) return;
@@ -469,8 +470,9 @@ async function captureAndStoreSnapshot(did, camConfig, client, api) {
     // MJPEG stream for live subscribers
     api.sendMjpegFrame(did, "main", frame);
 
-    // Image history store — enables static snapshot retrieval in the mobile app
+    // Image history + live-view key so the snapshot is retrievable in the app
     api.updateDeviceImage(did, "snapshot_latest", frame, "image/jpeg");
+    api.updateDeviceImage(did, "snapshot_live", frame, "image/jpeg");
   } catch (err) {
     log("error", "Snapshot error: " + err.message);
   }
@@ -525,7 +527,7 @@ function createTsAligner(emit) {
   };
 }
 
-function makeMpegFrameHandler(did, name, api) {
+function makeMpegFrameHandler(did, api) {
   let buffer = Buffer.alloc(0);
   const SOI = Buffer.from([0xff, 0xd8]);
   const EOI = Buffer.from([0xff, 0xd9]);
@@ -551,6 +553,28 @@ function makeMpegFrameHandler(did, name, api) {
       }
     }
   };
+}
+
+// Wires the shared ffmpeg plumbing for both live-view transports: debug logs
+// from stderr, MJPEG frame extraction from stdout, and process cleanup.
+function wireFfmpeg(proc, did, name, api) {
+  proc.stderr.on("data", (data) => {
+    log("debug", "ffmpeg: " + data.toString());
+  });
+  proc.stdout.on("data", makeMpegFrameHandler(did, api));
+
+  const cleanup = () => liveViewProcesses.delete(did);
+  proc.on("error", (err) => {
+    log("error", `Live view ffmpeg error for ${name}: ${err.message}`);
+    cleanup();
+  });
+  proc.on("close", (code) => {
+    log(
+      "info",
+      `Live view stopped for ${name}${code !== undefined ? ` (code=${code})` : ""}`,
+    );
+    cleanup();
+  });
 }
 
 async function startRtspLiveView(did, camConfig, api) {
@@ -580,23 +604,7 @@ async function startRtspLiveView(did, camConfig, api) {
       { stdio: ["ignore", "pipe", "pipe"] },
     );
 
-    proc.stderr.on("data", (data) => {
-      log("debug", "ffmpeg: " + data.toString());
-    });
-    proc.stdout.on("data", makeMpegFrameHandler(did, camConfig.name, api));
-
-    proc.on("error", (err) => {
-      log(
-        "error",
-        `Live view ffmpeg error for ${camConfig.name}: ${err.message}`,
-      );
-      liveViewProcesses.delete(did);
-    });
-
-    proc.on("close", (code) => {
-      log("info", `Live view stopped for ${camConfig.name} (code=${code})`);
-      liveViewProcesses.delete(did);
-    });
+    wireFfmpeg(proc, did, camConfig.name, api);
 
     liveViewProcesses.set(did, {
       stop: () => {
@@ -654,10 +662,7 @@ async function startP2pLiveView(did, camState, api) {
     { stdio: ["pipe", "pipe", "pipe"] },
   );
 
-  ffmpeg.stderr.on("data", (data) => {
-    log("debug", "ffmpeg: " + data.toString());
-  });
-  ffmpeg.stdout.on("data", makeMpegFrameHandler(did, camConfig.name, api));
+  wireFfmpeg(ffmpeg, did, camConfig.name, api);
 
   const client = new TapoStreamClient(
     (level, msg) => log(level, msg),
@@ -682,15 +687,6 @@ async function startP2pLiveView(did, camState, api) {
   });
   client.on("close", () => {
     log("debug", `P2P stream closed for ${camConfig.name}`);
-  });
-
-  ffmpeg.on("error", (err) => {
-    log("error", `Live view ffmpeg error for ${camConfig.name}: ${err.message}`);
-    liveViewProcesses.delete(did);
-  });
-  ffmpeg.on("close", () => {
-    log("info", `Live view stopped for ${camConfig.name}`);
-    liveViewProcesses.delete(did);
   });
 
   liveViewProcesses.set(did, {
@@ -730,7 +726,7 @@ async function startP2pLiveView(did, camState, api) {
   liveViewProcesses.delete(did);
 }
 
-function stopLiveView(did, api) {
+function stopLiveView(did) {
   const handle = liveViewProcesses.get(did);
   if (!handle) return;
   log("info", `Stopping live view for ${did}`);
@@ -742,7 +738,6 @@ function stopLiveView(did, api) {
 
 // ── Camera discovery ──────────────────────────────────────────────────
 function makeCameraId(camConfig) {
-  const crypto = require("crypto");
   const hash = crypto
     .createHash("sha256")
     .update(
@@ -1035,7 +1030,7 @@ async function discoverCameras(cfg, api) {
               const last = snapshotCooldowns.get(did) || 0;
               if (now - last >= cooldownMs) {
                 snapshotCooldowns.set(did, now);
-                captureAndStoreSnapshot(did, camConfig, client, api);
+                captureAndStoreSnapshot(did, client, api);
               }
             }
           });
@@ -1098,7 +1093,7 @@ async function discoverCameras(cfg, api) {
 
           // Periodic snapshot capture (when ONVIF motion is unavailable or snapshotOnMotion is disabled)
           if (!camConfig.snapshotOnMotion) {
-            await captureAndStoreSnapshot(did, camConfig, client, api);
+            await captureAndStoreSnapshot(did, client, api);
           }
         }, pullInterval);
         if (timer.unref) timer.unref();
@@ -1120,7 +1115,7 @@ async function discoverCameras(cfg, api) {
         clearInterval(cameraPollTimers.get(did));
         cameraPollTimers.delete(did);
       }
-      stopLiveView(did, api);
+      stopLiveView(did);
       if (doorbellTimers.has(did)) {
         clearTimeout(doorbellTimers.get(did));
         doorbellTimers.delete(did);
@@ -1193,14 +1188,14 @@ module.exports = {
           else if (key === "p2p_start") {
             startLiveView(deviceId, camState, api);
           } else if (key === "p2p_stop") {
-            stopLiveView(deviceId, api);
+            stopLiveView(deviceId);
           }
           // ── WebRTC signaling relay from mobile app ─────────────
           else if (key === "webrtc" && value && typeof value === "object") {
             if (value.action === "start") {
               startLiveView(deviceId, camState, api);
             } else if (value.action === "stop") {
-              stopLiveView(deviceId, api);
+              stopLiveView(deviceId);
             }
           }
         } catch (e) {
@@ -1258,7 +1253,7 @@ module.exports = {
     cameraPollTimers.clear();
 
     for (const [did] of liveViewProcesses) {
-      stopLiveView(did, savedApi);
+      stopLiveView(did);
     }
     liveViewProcesses.clear();
     for (const [did, timeout] of doorbellTimers) {
