@@ -1092,7 +1092,10 @@ async function discoverCameras(cfg, api) {
           }
 
           // Periodic snapshot capture (when ONVIF motion is unavailable or snapshotOnMotion is disabled)
-          if (!camConfig.snapshotOnMotion) {
+          // Periodic snapshot capture only when explicitly opted out of
+          // motion-triggered snapshots (default `snapshotOnMotion: true`,
+          // which battery cameras rely on to save power).
+          if (camConfig.snapshotOnMotion === false) {
             await captureAndStoreSnapshot(did, client, api);
           }
         }, pullInterval);
@@ -1194,7 +1197,11 @@ module.exports = {
           else if (key === "webrtc" && value && typeof value === "object") {
             if (value.action === "start") {
               startLiveView(deviceId, camState, api);
-            } else if (value.action === "stop") {
+            } else if (
+              value.action === "stop" ||
+              value.event === "disconnect"
+            ) {
+              // The app tears down live view with `{event:"disconnect"}`.
               stopLiveView(deviceId);
             }
           }
