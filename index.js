@@ -349,7 +349,7 @@ async function pollHubDevices(cfg, api) {
 
   for (const [tapoConnect, devices] of byHub) {
     try {
-      const all = await fetchHubDeviceList(tapoConnect, devices, ignoreSensors, api);
+      const all = await fetchHubDeviceList(tapoConnect);
       if (!all) continue;
 
       for (const { did, state } of devices) {
@@ -418,7 +418,7 @@ async function pollHubDevices(cfg, api) {
 // Fetches the child device list for a hub, re-logging in once if the session
 // has gone stale (TP-Link hub sessions expire and return 403 otherwise).
 // Returns a Map of uniqueId → device, or null if both attempts failed.
-async function fetchHubDeviceList(tapoConnect, devices, ignoreSensors, api) {
+async function fetchHubDeviceList(tapoConnect) {
   const hubIp = tapoConnect.deviceIp || "unknown";
 
   try {
@@ -587,6 +587,8 @@ async function startRtspLiveView(did, camConfig, api) {
     const proc = spawn(
       "ffmpeg",
       [
+        "-loglevel",
+        "error",
         "-i",
         rtspUrl,
         "-f",

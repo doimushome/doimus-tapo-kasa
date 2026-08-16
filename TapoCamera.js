@@ -201,11 +201,6 @@ class TapoCameraClient {
       .slice(0, 16);
   }
 
-  getAuthenticatedStreamUrl(lowQuality = false) {
-    const prefix = `rtsp://${this.config.streamUser}:${this.config.streamPassword}@${this.config.ipAddress}:554`;
-    return lowQuality ? `${prefix}/stream2` : `${prefix}/stream1`;
-  }
-
   validateDeviceConfirm(nonce, deviceConfirm) {
     this.passwordEncryptionMethod = null;
 

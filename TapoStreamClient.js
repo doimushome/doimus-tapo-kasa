@@ -91,7 +91,6 @@ class TapoStreamClient extends EventEmitter {
     this.aesKey = null;
     this.aesIv = null;
     this.hashMethod = "md5";
-    this.sessionId = null;
     this.started = false;
     this.ended = false;
   }
@@ -425,8 +424,6 @@ class TapoStreamClient extends EventEmitter {
   _handleJsonPart(body) {
     try {
       const json = JSON.parse(body.toString("utf8"));
-      const sessionId = json?.params?.session_id;
-      if (sessionId) this.sessionId = sessionId;
       if (json?.type === "response" && json?.error_code && json.error_code !== 0) {
         this._log("warn", `stream error: ${JSON.stringify(json)}`);
       }
