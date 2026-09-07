@@ -48,27 +48,8 @@ function aesDecrypt(ciphertext, key, iv) {
   return decrypted;
 }
 
-// HKDF-SHA256 extract+expand (RFC 5869), matching the app's BouncyCastle
-// HKDFBytesGenerator used for the newer "HKDF" media key scheme.
 function hkdf(ikm, salt, info, len) {
-  const extract = crypto
-    .createHmac("sha256", salt && salt.length ? salt : Buffer.alloc(32))
-    .update(ikm)
-    .digest();
-  const okm = Buffer.alloc(len);
-  let t = Buffer.alloc(0);
-  let pos = 0;
-  let counter = 1;
-  while (pos < len) {
-    t = crypto
-      .createHmac("sha256", extract)
-      .update(Buffer.concat([t, info, Buffer.from([counter])]))
-      .digest();
-    t.copy(okm, pos);
-    pos += t.length;
-    counter++;
-  }
-  return okm;
+  return Buffer.from(crypto.hkdfSync("sha256", ikm, salt, info, len));
 }
 
 // Tapo proprietary media-stream protocol on TCP/8800.

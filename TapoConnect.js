@@ -33,11 +33,7 @@ function base64Encode(buf) {
 }
 
 function compare(b1, b2) {
-  if (b1.length !== b2.length) return false;
-  for (let i = 0; i < b1.length; i++) {
-    if (b1[i] !== b2[i]) return false;
-  }
-  return true;
+  return b1.equals(b2);
 }
 
 function deriveKey(localSeed, remoteSeed, userHash) {
@@ -62,28 +58,11 @@ function incrementSeq(seq) {
   return buffer;
 }
 
-function pkcs7Pad(text, blockSize) {
-  const padSize = blockSize - (text.length % blockSize);
-  return text + String.fromCharCode(padSize).repeat(padSize);
-}
-
-function pkcs7Unpad(text) {
-  const paddingLength = text.charCodeAt(text.length - 1);
-  if (paddingLength > 16 || paddingLength > text.length) {
-    throw new Error("Invalid padding");
-  }
-  for (let i = text.length - paddingLength; i < text.length; i++) {
-    if (text.charCodeAt(i) !== paddingLength) {
-      throw new Error("Invalid padding");
-    }
-  }
-  return text.slice(0, text.length - paddingLength);
-}
-
 function aesEncrypt(plaintext, key, iv) {
   const crypto = require("crypto");
   const cipher = crypto.createCipheriv("aes-128-cbc", key, iv);
-  let encrypted = cipher.update(pkcs7Pad(plaintext, 16), "utf8", "hex");
+  cipher.setAutoPadding(true);
+  let encrypted = cipher.update(plaintext, "utf8", "hex");
   encrypted += cipher.final("hex");
   return Buffer.from(encrypted, "hex");
 }
@@ -91,9 +70,10 @@ function aesEncrypt(plaintext, key, iv) {
 function aesDecrypt(encryptedHex, key, iv) {
   const crypto = require("crypto");
   const decipher = crypto.createDecipheriv("aes-128-cbc", key, iv);
+  decipher.setAutoPadding(true);
   let decrypted = decipher.update(encryptedHex, "hex", "utf8");
   decrypted += decipher.final("utf8");
-  return pkcs7Unpad(decrypted);
+  return decrypted;
 }
 
 function encryptKlap(data, key, iv, seq) {
