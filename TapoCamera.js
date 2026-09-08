@@ -1,5 +1,6 @@
 const crypto = require("crypto");
 const EventEmitter = require("events");
+const { hashPassword } = require("./crypto-utils");
 
 const ERROR_CODES_MAP = {
   "-40401": "Invalid stok value",
@@ -21,16 +22,8 @@ class TapoCameraClient {
     this.log = log;
     this.config = config;
     this.cnonce = crypto.randomBytes(8).toString("hex").toUpperCase();
-    this.hashedPassword = crypto
-      .createHash("md5")
-      .update(config.password)
-      .digest("hex")
-      .toUpperCase();
-    this.hashedSha256Password = crypto
-      .createHash("sha256")
-      .update(config.password)
-      .digest("hex")
-      .toUpperCase();
+    this.hashedPassword = hashPassword(config.password, "md5");
+    this.hashedSha256Password = hashPassword(config.password, "sha256");
     this.passwordEncryptionMethod = null;
     this.isSecureConnectionValue = null;
     this.stok = undefined;

@@ -577,15 +577,25 @@ function wireFfmpeg(proc, did, name, api) {
   });
 }
 
+// Spawns ffmpeg with the given args, wires up stderr/stdout handling, and
+// returns the child process. Shared by both RTSP and P2P live-view transports.
+function spawnFfmpeg(did, name, api, args, stdinMode) {
+  const { spawn } = require("child_process");
+  const proc = spawn("ffmpeg", args, { stdio: [stdinMode, "pipe", "pipe"] });
+  wireFfmpeg(proc, did, name, api);
+  return proc;
+}
+
 async function startRtspLiveView(did, camConfig, api) {
   const rtspUrl = `rtsp://${camConfig.streamUser}:${camConfig.streamPassword}@${camConfig.ipAddress}:554/stream1`;
 
   log("info", `Starting live view for ${camConfig.name} via ${rtspUrl}`);
 
   try {
-    const { spawn } = require("child_process");
-    const proc = spawn(
-      "ffmpeg",
+    const proc = spawnFfmpeg(
+      did,
+      camConfig.name,
+      api,
       [
         "-loglevel",
         "error",
@@ -603,10 +613,8 @@ async function startRtspLiveView(did, camConfig, api) {
         "scale=640:-1", // scale down for bandwidth
         "pipe:1",
       ],
-      { stdio: ["ignore", "pipe", "pipe"] },
+      "ignore",
     );
-
-    wireFfmpeg(proc, did, camConfig.name, api);
 
     liveViewProcesses.set(did, {
       stop: () => {
@@ -627,15 +635,16 @@ async function startRtspLiveView(did, camConfig, api) {
 // feed ffmpeg stdin, relay MJPEG frames to the app.
 async function startP2pLiveView(did, camState, api) {
   const camConfig = camState.config;
-  const { spawn } = require("child_process");
 
   log(
     "info",
     `Starting live view for ${camConfig.name} via P2P (${camConfig.ipAddress}:8800)`,
   );
 
-  const ffmpeg = spawn(
-    "ffmpeg",
+  const ffmpeg = spawnFfmpeg(
+    did,
+    camConfig.name,
+    api,
     [
       "-loglevel",
       "error",
@@ -661,10 +670,8 @@ async function startP2pLiveView(did, camState, api) {
       "mjpeg",
       "pipe:1",
     ],
-    { stdio: ["pipe", "pipe", "pipe"] },
+    "pipe",
   );
-
-  wireFfmpeg(ffmpeg, did, camConfig.name, api);
 
   const client = new TapoStreamClient(
     (level, msg) => log(level, msg),

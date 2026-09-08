@@ -1,51 +1,11 @@
 const axios = require("axios");
-const { createHash, randomBytes } = require("crypto");
+const { createHash, randomBytes, createCipheriv, createDecipheriv } = require("crypto");
 
-function concatBuf(...parts) {
-  const total = parts.reduce((s, p) => s + p.length, 0);
-  const out = Buffer.allocUnsafe(total);
-  let o = 0;
-  for (const p of parts) {
-    out.set(p, o);
-    o += p.length;
-  }
-  return out;
-}
-
-function sha1(data) {
-  const h = createHash("sha1");
-  h.update(typeof data === "string" ? data : data, typeof data === "string" ? "utf8" : undefined);
-  return h.digest();
-}
-
-function sha256(data) {
-  const h = createHash("sha256");
-  h.update(data);
-  return h.digest();
-}
-
-function encode(str) {
-  return Buffer.from(str, "utf8");
-}
-
-function base64Encode(buf) {
-  return buf.toString("base64");
-}
-
-function compare(b1, b2) {
-  return b1.equals(b2);
-}
-
-function deriveKey(localSeed, remoteSeed, userHash) {
-  return sha256(concatBuf(encode("lsk"), localSeed, remoteSeed, userHash)).subarray(0, 16);
-}
-
-function deriveIv(localSeed, remoteSeed, userHash) {
-  return sha256(concatBuf(encode("iv"), localSeed, remoteSeed, userHash));
-}
-
-function deriveSig(localSeed, remoteSeed, userHash) {
-  return sha256(concatBuf(encode("ldk"), localSeed, remoteSeed, userHash)).subarray(0, 28);
+function deriveWithPrefix(prefix, localSeed, remoteSeed, userHash, length) {
+  const result = createHash("sha256")
+    .update(Buffer.concat([Buffer.from(prefix, "utf8"), localSeed, remoteSeed, userHash]))
+    .digest();
+  return length !== undefined ? result.subarray(0, length) : result;
 }
 
 function deriveSeqFromIv(iv) {
@@ -59,8 +19,7 @@ function incrementSeq(seq) {
 }
 
 function aesEncrypt(plaintext, key, iv) {
-  const crypto = require("crypto");
-  const cipher = crypto.createCipheriv("aes-128-cbc", key, iv);
+  const cipher = createCipheriv("aes-128-cbc", key, iv);
   cipher.setAutoPadding(true);
   let encrypted = cipher.update(plaintext, "utf8", "hex");
   encrypted += cipher.final("hex");
@@ -68,8 +27,7 @@ function aesEncrypt(plaintext, key, iv) {
 }
 
 function aesDecrypt(encryptedHex, key, iv) {
-  const crypto = require("crypto");
-  const decipher = crypto.createDecipheriv("aes-128-cbc", key, iv);
+  const decipher = createDecipheriv("aes-128-cbc", key, iv);
   decipher.setAutoPadding(true);
   let decrypted = decipher.update(encryptedHex, "hex", "utf8");
   decrypted += decipher.final("utf8");
@@ -90,7 +48,7 @@ function encryptKlap(data, key, iv, seq) {
 
 function encryptAndSignKlap(data, key, iv, sig, seq) {
   const ciphertext = encryptKlap(data, key, iv, seq);
-  const signature = sha256(concatBuf(sig, seq, ciphertext));
+  const signature = createHash("sha256").update(Buffer.concat([sig, seq, ciphertext])).digest();
   return Buffer.concat([signature, ciphertext]);
 }
 
@@ -198,8 +156,8 @@ class TapoConnect {
     const loginDeviceRequest = {
       method: "login_device",
       params: {
-        username: base64Encode(sha1(this.email)),
-        password: base64Encode(this.password),
+        username: createHash("sha1").update(this.email, "utf8").digest().toString("base64"),
+        password: this.password.toString("base64"),
       },
       requestTimeMils: 0,
     };
@@ -254,23 +212,25 @@ class TapoConnect {
     const remoteSeed = responseBytes.subarray(0, 16);
     const serverHash = responseBytes.subarray(16);
 
-    const localAuthHash = sha256(concatBuf(sha1(this.email), sha1(this.password)));
-    const localSeedAuthHash = sha256(concatBuf(localSeed, remoteSeed, localAuthHash));
+    const emailHash = createHash("sha1").update(this.email, "utf8").digest();
+    const passwordHash = createHash("sha1").update(this.password, "utf8").digest();
+    const localAuthHash = createHash("sha256").update(Buffer.concat([emailHash, passwordHash])).digest();
+    const localSeedAuthHash = createHash("sha256").update(Buffer.concat([localSeed, remoteSeed, localAuthHash])).digest();
 
-    if (!compare(localSeedAuthHash, serverHash)) {
+    if (Buffer.compare(localSeedAuthHash, serverHash) !== 0) {
       throw new Error("email or password incorrect");
     }
 
-    const payload = sha256(concatBuf(remoteSeed, localSeed, localAuthHash));
+    const payload = createHash("sha256").update(Buffer.concat([remoteSeed, localSeed, localAuthHash])).digest();
     await axios.post(`http://${this.deviceIp}/app/handshake2`, payload, {
       responseType: "arraybuffer",
       headers: { Cookie: this.sessionCookie },
       timeout: this.CONNECT_TIMEOUT,
     });
 
-    this.deviceKey.key = deriveKey(localSeed, remoteSeed, localAuthHash);
-    this.deviceKey.iv = deriveIv(localSeed, remoteSeed, localAuthHash);
-    this.sig = deriveSig(localSeed, remoteSeed, localAuthHash);
+    this.deviceKey.key = deriveWithPrefix("lsk", localSeed, remoteSeed, localAuthHash, 16);
+    this.deviceKey.iv = deriveWithPrefix("iv", localSeed, remoteSeed, localAuthHash);
+    this.sig = deriveWithPrefix("ldk", localSeed, remoteSeed, localAuthHash, 28);
     this.seq = deriveSeqFromIv(this.deviceKey.iv);
   }
 

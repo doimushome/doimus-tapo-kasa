@@ -1,35 +1,11 @@
 const net = require("net");
 const crypto = require("crypto");
 const EventEmitter = require("events");
+const { hashPassword, md5Hex, sha256Hex } = require("./crypto-utils");
 
 // Super-secret key used by legacy firmware when media encryption is disabled
 // (Key-Exchange header advertises `username="none"`). Documented in go2rtc.
 const SUPER_SECRET_KEY = "TPL075526460603";
-
-function hashPassword(password, method) {
-  if (method === "sha256") {
-    return crypto
-      .createHash("sha256")
-      .update(password)
-      .digest("hex")
-      .toUpperCase();
-  }
-  return crypto.createHash("md5").update(password).digest("hex").toUpperCase();
-}
-
-function md5Hex(...parts) {
-  return crypto
-    .createHash("md5")
-    .update(parts.join(":"))
-    .digest("hex");
-}
-
-function sha256Hex(...parts) {
-  return crypto
-    .createHash("sha256")
-    .update(parts.join(":"))
-    .digest("hex");
-}
 
 function between(buf, start, end) {
   const s = buf.indexOf(start);
