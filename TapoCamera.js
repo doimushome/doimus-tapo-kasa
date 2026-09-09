@@ -4,17 +4,8 @@ const { hashPassword } = require("./crypto-utils");
 
 const ERROR_CODES_MAP = {
   "-40401": "Invalid stok value",
-  "-40210": "Function not supported",
-  "-64303": "Action cannot be done while camera is in patrol mode",
-  "-64324": "Privacy mode is ON, not able to execute",
-  "-64302": "Preset ID not found",
-  "-64321": "Preset ID was deleted so no longer exists",
-  "-40106": "Parameter to get/do does not exist",
-  "-40105": "Method does not exist",
-  "-40101": "Parameter to set does not exist",
   "-40209": "Invalid login credentials",
-  "-64304": "Maximum Pan/Tilt range reached",
-  "-71103": "User ID is not authorized",
+  "-40413": "Invalid device confirm",
 };
 
 class TapoCameraClient {
@@ -129,10 +120,10 @@ class TapoCameraClient {
     return this.config.username || "admin";
   }
 
-  getHeaders() {
+  static getHeaders(ipAddress) {
     return {
-      Host: `https://${this.config.ipAddress}`,
-      Referer: `https://${this.config.ipAddress}`,
+      Host: `https://${ipAddress}`,
+      Referer: `https://${ipAddress}`,
       Accept: "application/json",
       "Accept-Encoding": "gzip, deflate",
       "User-Agent": "Tapo CameraClient Android",
@@ -171,7 +162,7 @@ class TapoCameraClient {
       url,
       data: data.body ? JSON.parse(data.body) : undefined,
       headers: {
-        ...this.getHeaders(),
+        ...TapoCameraClient.getHeaders(this.config.ipAddress),
         ...(data.headers || {}),
       },
       httpsAgent: agent,
@@ -449,7 +440,7 @@ class TapoCameraClient {
           fetchParams = {
             body: JSON.stringify(encryptedRequest),
             headers: {
-              ...this.getHeaders(),
+              ...TapoCameraClient.getHeaders(this.config.ipAddress),
               Tapo_tag: this.getTapoTag(encryptedRequest),
               Seq: this.seq.toString(),
             },

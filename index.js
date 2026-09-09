@@ -47,21 +47,15 @@ function eventToContactState(event) {
   return undefined;
 }
 
-// Logged once per sensor so the response shape is visible at debug level.
-const loggedTriggerShapes = new Set();
-
 async function readTriggerLogs(device, tapoConnect) {
   try {
     const response = await tapoConnect.getChildTriggerLogs(device.uniqueId);
     const logs = extractTriggerLogs(response);
     if (!logs?.length) return null;
-    if (!loggedTriggerShapes.has(device.uniqueId)) {
-      loggedTriggerShapes.add(device.uniqueId);
-      log(
-        "debug",
-        `Trigger log shape for ${device.name}: ${JSON.stringify(response).slice(0, 400)}`,
-      );
-    }
+    log(
+      "debug",
+      `Trigger log shape for ${device.name}: ${JSON.stringify(response).slice(0, 400)}`,
+    );
     return logs;
   } catch (e) {
     log("debug", `Trigger log fetch failed for ${device.name}: ${e.message}`);
@@ -1278,7 +1272,6 @@ module.exports = {
     doorbellTimers.clear();
     snapshotCooldowns.clear();
     hubReconnectCooldowns.clear();
-    loggedTriggerShapes.clear();
 
     hubDevices.clear();
     cameraDevices.clear();

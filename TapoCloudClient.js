@@ -14,10 +14,6 @@ class TapoCloudClient {
     this.terminalUUID = randomUUID();
   }
 
-  _log(level, msg) {
-    this.log?.(level, `[TapoCloud] ${msg}`);
-  }
-
   async _post(data, token) {
     const response = await axios({
       method: "post",
@@ -50,7 +46,7 @@ class TapoCloudClient {
     });
     if (!result?.token) throw new Error("Cloud login returned no token");
     this.token = result.token;
-    this._log("debug", "cloud login ok");
+    this.log?.("debug", "[TapoCloud] cloud login ok");
     return this.token;
   }
 
@@ -58,7 +54,7 @@ class TapoCloudClient {
     if (!this.token) await this.login();
     const result = await this._post({ method: "getDeviceList" }, this.token);
     const list = result?.deviceList || [];
-    this._log("debug", `cloud returned ${list.length} devices`);
+    this.log?.("debug", `[TapoCloud] cloud returned ${list.length} devices`);
     return list;
   }
 }
